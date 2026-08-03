@@ -357,6 +357,10 @@ function App() {
 
       const ctx = canvas.getContext("2d");
       if (ctx) {
+        if (video.videoWidth && video.videoHeight && (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight)) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        }
         // Draw video frame to hidden canvas
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         
