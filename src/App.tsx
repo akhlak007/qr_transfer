@@ -262,6 +262,8 @@ function App() {
   const scannedFramesCountRef = useRef<number>(0);
   const rxSpeedIntervalRef = useRef<number | null>(null);
   const lastResolvedCountRef = useRef<number>(0);
+  const uniqueFramesCountRef = useRef<number>(0);
+  const lastUniqueCountRef = useRef<number>(0);
 
   // Start Camera
   const startCamera = async () => {
@@ -321,6 +323,8 @@ function App() {
     }
     lastResolvedCountRef.current = 0;
     scannedFramesCountRef.current = 0;
+    uniqueFramesCountRef.current = 0;
+    lastUniqueCountRef.current = 0;
   };
 
   // Continuous QR Scanner Loop
@@ -335,9 +339,9 @@ function App() {
     if (rxSpeedIntervalRef.current) clearInterval(rxSpeedIntervalRef.current);
     rxSpeedIntervalRef.current = window.setInterval(() => {
       if (receivedMeta) {
-        // Calculate speed based on newly resolved blocks
-        const diff = (fountainDecoderRef.current?.getResolvedCount() || seqBlocksMapRef.current.size) - lastResolvedCountRef.current;
-        lastResolvedCountRef.current = fountainDecoderRef.current?.getResolvedCount() || seqBlocksMapRef.current.size;
+        // Calculate speed based on newly received unique frames/symbols
+        const diff = uniqueFramesCountRef.current - lastUniqueCountRef.current;
+        lastUniqueCountRef.current = uniqueFramesCountRef.current;
         const speed = (diff * receivedMeta.blockSize) / 1024; // KB/s
         setRxStats((prev) => ({
           ...prev,
@@ -423,6 +427,7 @@ function App() {
         if (seqBlocksMapRef.current.has(blockIndex)) {
           setRxStats((prev) => ({ ...prev, duplicateFrames: prev.duplicateFrames + 1 }));
         } else {
+          uniqueFramesCountRef.current++;
           seqBlocksMapRef.current.set(blockIndex, payload);
           const currentCount = seqBlocksMapRef.current.size;
           setResolvedBlocksCount(currentCount);
@@ -461,16 +466,19 @@ function App() {
           fountainDecoderRef.current = new FountainDecoder(K, payload.length);
         }
 
-        const resolvedCountBefore = fountainDecoderRef.current.getResolvedCount();
+        const redundantBefore = fountainDecoderRef.current.redundantSymbols;
         const symbol: FountainSymbol = { seed, degree, payload };
         
         const isDone = fountainDecoderRef.current.processSymbol(symbol);
+        const redundantAfter = fountainDecoderRef.current.redundantSymbols;
+        
         const resolvedCountAfter = fountainDecoderRef.current.getResolvedCount();
-
         setResolvedBlocksCount(resolvedCountAfter);
 
-        if (resolvedCountAfter === resolvedCountBefore) {
+        if (redundantAfter > redundantBefore) {
           setRxStats((prev) => ({ ...prev, duplicateFrames: prev.duplicateFrames + 1 }));
+        } else {
+          uniqueFramesCountRef.current++;
         }
 
         if (isDone) {
