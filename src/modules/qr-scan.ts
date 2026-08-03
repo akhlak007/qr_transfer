@@ -38,7 +38,7 @@ export async function scanQRCode(
       }
     }
   } catch (error) {
-    // Fail silently during active frame loops to prevent logging noise
+    console.warn("Decode failure:", error);
   }
   return null;
 }

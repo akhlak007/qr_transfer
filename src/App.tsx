@@ -234,7 +234,7 @@ function App() {
 
   // --- RECEIVER STATE ---
   const [isCameraActive, setIsCameraActive] = useState(false);
-  const [scanStatus, setScanStatus] = useState<"idle" | "listening" | "receiving" | "success" | "failed">("idle");
+  const [scanStatus, setScanStatus] = useState<"idle" | "listening" | "receiving" | "success" | "failed" | "reconnecting">("idle");
   const [receivedMeta, setReceivedMeta] = useState<FileMetadata | null>(null);
   
   // Progress/Metrics
@@ -266,9 +266,11 @@ function App() {
   const lastUniqueCountRef = useRef<number>(0);
 
   // Start Camera
-  const startCamera = async () => {
+  const startCamera = async (resume: boolean = false) => {
     // Clear old download/decoding state
-    resetReceiverState();
+    if (!resume) {
+      resetReceiverState();
+    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -279,7 +281,12 @@ function App() {
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         setIsCameraActive(true);
-        setScanStatus("listening");
+        if (!resume) {
+          setScanStatus("listening");
+        } else {
+          // If resuming, we stay in 'receiving' if we already have metadata, else 'listening'
+          setScanStatus(receivedMeta ? "receiving" : "listening");
+        }
         
         // Start scanning loop
         startScanningLoop();
@@ -338,6 +345,19 @@ function App() {
     // Start speed measuring interval (every 1 second)
     if (rxSpeedIntervalRef.current) clearInterval(rxSpeedIntervalRef.current);
     rxSpeedIntervalRef.current = window.setInterval(() => {
+      // Camera Stream Watchdog
+      const video = videoRef.current;
+      if (video && video.srcObject) {
+        const stream = video.srcObject as MediaStream;
+        const tracks = stream.getVideoTracks();
+        if (tracks.length > 0 && tracks[0].readyState === 'ended') {
+          console.warn("Camera stream died (track ended). Reconnecting...");
+          setScanStatus("reconnecting");
+          startCamera(true);
+          return;
+        }
+      }
+
       if (receivedMeta) {
         // Calculate speed based on newly received unique frames/symbols
         const diff = uniqueFramesCountRef.current - lastUniqueCountRef.current;
@@ -351,43 +371,52 @@ function App() {
     }, 1000);
 
     const scanFrame = async () => {
-      const video = videoRef.current;
-      const canvas = rxCanvasRef.current;
-      
-      if (!video || !canvas || video.readyState !== video.HAVE_ENOUGH_DATA) {
-        scanLoopRef.current = requestAnimationFrame(scanFrame);
-        return;
-      }
-
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        if (video.videoWidth && video.videoHeight && (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight)) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-        }
-        // Draw video frame to hidden canvas
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      try {
+        const video = videoRef.current;
+        const canvas = rxCanvasRef.current;
         
-        // Measure scan FPS
-        const now = performance.now();
-        scannedFramesCountRef.current++;
-        if (now - lastFpsTime >= 1000) {
-          const fps = Math.round((scannedFramesCountRef.current * 1000) / (now - lastFpsTime));
-          setRxStats((prev) => ({ ...prev, scanFps: fps }));
-          scannedFramesCountRef.current = 0;
-          lastFpsTime = now;
+        if (!video || !canvas || video.readyState !== video.HAVE_ENOUGH_DATA) {
+          return;
         }
 
-        // Scan QR from Canvas
-        const scanResult = await scanQRCode(canvas);
-        
-        if (scanResult) {
-          setRxStats((prev) => ({ ...prev, totalFramesScanned: prev.totalFramesScanned + 1 }));
-          processScannedBytes(scanResult.bytes);
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          if (video.videoWidth && video.videoHeight && (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight)) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+          }
+          // Draw video frame to hidden canvas
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          console.log("Frame scanned");
+          
+          // Measure scan FPS
+          const now = performance.now();
+          scannedFramesCountRef.current++;
+          if (now - lastFpsTime >= 1000) {
+            const fps = Math.round((scannedFramesCountRef.current * 1000) / (now - lastFpsTime));
+            setRxStats((prev) => ({ ...prev, scanFps: fps }));
+            scannedFramesCountRef.current = 0;
+            lastFpsTime = now;
+          }
+
+          // Scan QR from Canvas
+          const scanResult = await scanQRCode(canvas);
+          
+          if (scanResult) {
+            console.log("Decode success");
+            setRxStats((prev) => ({ ...prev, totalFramesScanned: prev.totalFramesScanned + 1 }));
+            await processScannedBytes(scanResult.bytes);
+          } else {
+            console.log("Decode failure");
+          }
+        }
+      } catch (err) {
+        console.error("Frame processing error:", err);
+      } finally {
+        if (videoRef.current && videoRef.current.srcObject) {
+          scanLoopRef.current = requestAnimationFrame(scanFrame);
         }
       }
-
-      scanLoopRef.current = requestAnimationFrame(scanFrame);
     };
 
     scanLoopRef.current = requestAnimationFrame(scanFrame);
@@ -425,8 +454,10 @@ function App() {
         const { blockIndex, payload } = decodeSequentialFrame(bytes);
         
         if (seqBlocksMapRef.current.has(blockIndex)) {
+          console.log("Duplicate symbol dropped");
           setRxStats((prev) => ({ ...prev, duplicateFrames: prev.duplicateFrames + 1 }));
         } else {
+          console.log("Symbol accepted");
           uniqueFramesCountRef.current++;
           seqBlocksMapRef.current.set(blockIndex, payload);
           const currentCount = seqBlocksMapRef.current.size;
@@ -476,8 +507,10 @@ function App() {
         setResolvedBlocksCount(resolvedCountAfter);
 
         if (redundantAfter > redundantBefore) {
+          console.log("Duplicate symbol dropped");
           setRxStats((prev) => ({ ...prev, duplicateFrames: prev.duplicateFrames + 1 }));
         } else {
+          console.log("Symbol accepted");
           uniqueFramesCountRef.current++;
         }
 
@@ -807,6 +840,7 @@ function App() {
                   {scanStatus === "receiving" && "Transferring..."}
                   {scanStatus === "success" && "Success"}
                   {scanStatus === "failed" && "Failed"}
+                  {scanStatus === "reconnecting" && "Camera disconnected, reconnecting..."}
                 </span>
                 {!zxingReady && (
                   <span style={{ marginLeft: "12px", fontSize: "13px", color: "var(--color-cyan)" }}>
