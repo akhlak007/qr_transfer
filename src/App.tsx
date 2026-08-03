@@ -236,6 +236,7 @@ function App() {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [scanStatus, setScanStatus] = useState<"idle" | "listening" | "receiving" | "success" | "failed" | "reconnecting">("idle");
   const [receivedMeta, setReceivedMeta] = useState<FileMetadata | null>(null);
+  const receivedMetaRef = useRef<FileMetadata | null>(null);
   
   // Progress/Metrics
   const [resolvedBlocksCount, setResolvedBlocksCount] = useState(0);
@@ -285,7 +286,7 @@ function App() {
           setScanStatus("listening");
         } else {
           // If resuming, we stay in 'receiving' if we already have metadata, else 'listening'
-          setScanStatus(receivedMeta ? "receiving" : "listening");
+          setScanStatus(receivedMetaRef.current ? "receiving" : "listening");
         }
         
         // Start scanning loop
@@ -316,6 +317,7 @@ function App() {
     seqBlocksMapRef.current.clear();
     fountainDecoderRef.current = null;
     setReceivedMeta(null);
+    receivedMetaRef.current = null;
     setResolvedBlocksCount(0);
     setRxStats({
       totalFramesScanned: 0,
@@ -358,11 +360,11 @@ function App() {
         }
       }
 
-      if (receivedMeta) {
+      if (receivedMetaRef.current) {
         // Calculate speed based on newly received unique frames/symbols
         const diff = uniqueFramesCountRef.current - lastUniqueCountRef.current;
         lastUniqueCountRef.current = uniqueFramesCountRef.current;
-        const speed = (diff * receivedMeta.blockSize) / 1024; // KB/s
+        const speed = (diff * receivedMetaRef.current.blockSize) / 1024; // KB/s
         setRxStats((prev) => ({
           ...prev,
           speedKbs: Math.round(speed),
@@ -431,8 +433,9 @@ function App() {
     if (type === FrameType.Metadata) {
       try {
         const meta = decodeMetadataFrame(bytes);
-        if (!receivedMeta || receivedMeta.fileHash.toString() !== meta.fileHash.toString()) {
+        if (!receivedMetaRef.current || receivedMetaRef.current.fileHash.toString() !== meta.fileHash.toString()) {
           setReceivedMeta(meta);
+          receivedMetaRef.current = meta;
           setScanStatus("receiving");
           
           // Pre-initialize fountain decoder if needed
@@ -448,7 +451,7 @@ function App() {
 
     // Handle Sequential frame
     if (type === FrameType.Sequential) {
-      if (!receivedMeta) return; // ignore data if we don't have metadata yet
+      if (!receivedMetaRef.current) return; // ignore data if we don't have metadata yet
       
       try {
         const { blockIndex, payload } = decodeSequentialFrame(bytes);
@@ -464,7 +467,7 @@ function App() {
           setResolvedBlocksCount(currentCount);
 
           // Check if complete
-          if (currentCount === receivedMeta.totalBlocks) {
+          if (currentCount === receivedMetaRef.current.totalBlocks) {
             finalizeSequentialTransfer();
           }
         }
@@ -480,7 +483,7 @@ function App() {
         const { seed, degree, totalBlocks, payload } = decodeFountainFrame(bytes);
 
         // Auto-initialize metadata placeholder if we missed the metadata frame but got a fountain frame
-        if (!receivedMeta) {
+        if (!receivedMetaRef.current) {
           const placeholderMeta: FileMetadata = {
             fileSize: totalBlocks * payload.length, // approximation
             blockSize: payload.length,
@@ -489,6 +492,7 @@ function App() {
             fileName: "reconstructed_file",
           };
           setReceivedMeta(placeholderMeta);
+          receivedMetaRef.current = placeholderMeta;
           setScanStatus("receiving");
         }
 
@@ -526,32 +530,35 @@ function App() {
 
   // Rebuild and save files
   const finalizeSequentialTransfer = async () => {
-    if (!receivedMeta) return;
+    const meta = receivedMetaRef.current;
+    if (!meta) return;
     stopCamera();
     setScanStatus("success");
 
     // Collect blocks in order
     const blocks: Uint8Array[] = [];
-    for (let i = 0; i < receivedMeta.totalBlocks; i++) {
-      blocks.push(seqBlocksMapRef.current.get(i) || new Uint8Array(receivedMeta.blockSize));
+    for (let i = 0; i < meta.totalBlocks; i++) {
+      blocks.push(seqBlocksMapRef.current.get(i) || new Uint8Array(meta.blockSize));
     }
 
-    const fileData = reassembleFile(blocks, receivedMeta.fileSize, receivedMeta.blockSize);
+    const fileData = reassembleFile(blocks, meta.fileSize, meta.blockSize);
     await verifyAndSaveFile(fileData);
   };
 
   const finalizeFountainTransfer = async () => {
-    if (!receivedMeta || !fountainDecoderRef.current) return;
+    const meta = receivedMetaRef.current;
+    if (!meta || !fountainDecoderRef.current) return;
     stopCamera();
     setScanStatus("success");
 
     const blocks = fountainDecoderRef.current.getResolvedBlocks();
-    const fileData = reassembleFile(blocks, receivedMeta.fileSize, receivedMeta.blockSize);
+    const fileData = reassembleFile(blocks, meta.fileSize, meta.blockSize);
     await verifyAndSaveFile(fileData);
   };
 
   const verifyAndSaveFile = async (fileData: Uint8Array) => {
-    if (!receivedMeta) return;
+    const meta = receivedMetaRef.current;
+    if (!meta) return;
 
     // Verify SHA-256 Hash
     const hashBuffer = await crypto.subtle.digest("SHA-256", fileData.buffer as ArrayBuffer);
@@ -560,9 +567,9 @@ function App() {
     let isMatch = true;
     
     // Hash check
-    if (receivedMeta.fileHash.some((val) => val !== 0)) {
+    if (meta.fileHash.some((val) => val !== 0)) {
       for (let i = 0; i < 32; i++) {
-        if (hashArray[i] !== receivedMeta.fileHash[i]) {
+        if (hashArray[i] !== meta.fileHash[i]) {
           isMatch = false;
           break;
         }
