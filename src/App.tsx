@@ -389,7 +389,6 @@ function App() {
           }
           // Draw video frame to hidden canvas
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          console.log("Frame scanned");
           
           // Measure scan FPS
           const now = performance.now();
@@ -408,8 +407,6 @@ function App() {
             console.log("Decode success");
             setRxStats((prev) => ({ ...prev, totalFramesScanned: prev.totalFramesScanned + 1 }));
             await processScannedBytes(scanResult.bytes);
-          } else {
-            console.log("Decode failure");
           }
         }
       } catch (err) {
@@ -598,7 +595,7 @@ function App() {
       <header className="header">
         <div className="logo-container">
           <div className="logo-icon">L</div>
-          <h1 className="app-title">Lumen</h1>
+          <h1 className="app-title">Lumen (test 1)</h1>
         </div>
         <p className="app-subtitle">High-speed, rateless optical file transfer via QR code animation</p>
       </header>
