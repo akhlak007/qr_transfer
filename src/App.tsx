@@ -809,7 +809,7 @@ function App() {
                     }}
                   >
                     <span style={{ fontSize: "40px" }}>📷</span>
-                    <button className="btn btn-primary" onClick={startCamera}>
+                    <button className="btn btn-primary" onClick={() => startCamera()}>
                       Start Camera Feed
                     </button>
                   </div>
