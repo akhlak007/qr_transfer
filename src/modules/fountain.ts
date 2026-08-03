@@ -150,7 +150,6 @@ interface DecoderSymbol {
 export class FountainDecoder {
   private K: number;
   private blockSize: number;
-  private soliton: RobustSoliton;
   private resolvedBlocks = new Map<number, Uint8Array>();
   private unresolvedSymbols: DecoderSymbol[] = [];
   
@@ -161,7 +160,6 @@ export class FountainDecoder {
   constructor(K: number, blockSize: number) {
     this.K = K;
     this.blockSize = blockSize;
-    this.soliton = new RobustSoliton(K);
   }
 
   /**
@@ -175,9 +173,8 @@ export class FountainDecoder {
       return true;
     }
 
-    // Recover block indices from seed
-    const rng = mulberry32(symbol.seed);
-    const degree = this.soliton.sample(rng());
+    // Recover block indices from seed using the transmitted degree
+    const degree = symbol.degree;
     const indicesArray = getIndicesFromSeed(symbol.seed, degree, this.K);
     const indices = new Set(indicesArray);
 
