@@ -19,26 +19,26 @@ import { prepareZXingModule } from "zxing-wasm/reader";
 
 const PlayIcon = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-    <polygon points="5 3 19 12 5 21 5 3"/>
+    <polygon points="5 3 19 12 5 21 5 3" />
   </svg>
 );
 
 const PauseIcon = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-    <rect x="6" y="4" width="4" height="16"/>
-    <rect x="14" y="4" width="4" height="16"/>
+    <rect x="6" y="4" width="4" height="16" />
+    <rect x="14" y="4" width="4" height="16" />
   </svg>
 );
 
 const StopIcon = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-    <rect x="4" y="4" width="16" height="16"/>
+    <rect x="4" y="4" width="16" height="16" />
   </svg>
 );
 
 const DownloadIcon = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" />
   </svg>
 );
 
@@ -62,7 +62,7 @@ function App() {
   const [fps, setFps] = useState<number>(10);
   const [qrEcc, setQrEcc] = useState<"L" | "M" | "Q" | "H">("L");
   const [qrVersion, setQrVersion] = useState<number | undefined>(undefined); // Auto version
-  
+
   const [isSending, setIsSending] = useState(false);
   const [senderStats, setSenderStats] = useState({
     totalBlocks: 0,
@@ -154,7 +154,7 @@ function App() {
     if (transferType === "file" && !sendFile) return;
     if (transferType === "message" && !sendText.trim()) return;
     if (!fileBytesRef.current || !fileHashRef.current) return;
-    
+
     if (isSending) {
       // Pause
       if (sendTimerRef.current) clearInterval(sendTimerRef.current);
@@ -174,7 +174,7 @@ function App() {
       framesSent: 0,
       currentFrameIndex: 0,
     }));
-    
+
     // Clear canvas
     const canvas = sendCanvasRef.current;
     if (canvas) {
@@ -214,7 +214,7 @@ function App() {
           // Sequential mode
           const block = chunksRef.current[seqIndex];
           frameData = encodeSequentialFrame(seqIndex, block);
-          
+
           setSenderStats((prev) => ({
             ...prev,
             currentFrameIndex: seqIndex,
@@ -228,7 +228,7 @@ function App() {
           }
           const symbol = fountainEncoderRef.current.generateSymbol();
           frameData = encodeFountainFrame(symbol, chunksRef.current.length);
-          
+
           setSenderStats((prev) => ({
             ...prev,
             fountainSeed: symbol.seed,
@@ -271,7 +271,7 @@ function App() {
   const [scanStatus, setScanStatus] = useState<"idle" | "listening" | "receiving" | "success" | "failed" | "reconnecting">("idle");
   const [receivedMeta, setReceivedMeta] = useState<FileMetadata | null>(null);
   const receivedMetaRef = useRef<FileMetadata | null>(null);
-  
+
   // Progress/Metrics
   const [resolvedBlocksCount, setResolvedBlocksCount] = useState(0);
   const [rxStats, setRxStats] = useState({
@@ -280,7 +280,7 @@ function App() {
     speedKbs: 0,
     scanFps: 0,
   });
-  
+
   const [hashMatches, setHashMatches] = useState<"unchecked" | "matched" | "mismatch">("unchecked");
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [receivedMessage, setReceivedMessage] = useState<string | null>(null);
@@ -288,11 +288,11 @@ function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const rxCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const scanLoopRef = useRef<number | null>(null);
-  
+
   // Decoding buffers
   const seqBlocksMapRef = useRef<Map<number, Uint8Array>>(new Map());
   const fountainDecoderRef = useRef<FountainDecoder | null>(null);
-  
+
   // Performance indicators
   const lastScanTimeRef = useRef<number>(0);
   const scannedFramesCountRef = useRef<number>(0);
@@ -323,7 +323,7 @@ function App() {
           // If resuming, we stay in 'receiving' if we already have metadata, else 'listening'
           setScanStatus(receivedMetaRef.current ? "receiving" : "listening");
         }
-        
+
         // Start scanning loop
         startScanningLoop();
       }
@@ -337,13 +337,13 @@ function App() {
   const stopCamera = () => {
     if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
     if (rxSpeedIntervalRef.current) clearInterval(rxSpeedIntervalRef.current);
-    
+
     if (videoRef.current && videoRef.current.srcObject) {
       const stream = videoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach((track) => track.stop());
       videoRef.current.srcObject = null;
     }
-    
+
     setIsCameraActive(false);
     setScanStatus("idle");
   };
@@ -375,7 +375,7 @@ function App() {
   // Continuous QR Scanner Loop
   const startScanningLoop = () => {
     if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
-    
+
     // Performance trackers
     let lastFpsTime = performance.now();
     lastScanTimeRef.current = performance.now();
@@ -412,7 +412,7 @@ function App() {
       try {
         const video = videoRef.current;
         const canvas = rxCanvasRef.current;
-        
+
         if (!video || !canvas || video.readyState !== video.HAVE_ENOUGH_DATA) {
           return;
         }
@@ -425,7 +425,7 @@ function App() {
           }
           // Draw video frame to hidden canvas
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          
+
           // Measure scan FPS
           const now = performance.now();
           scannedFramesCountRef.current++;
@@ -438,7 +438,7 @@ function App() {
 
           // Scan QR from Canvas
           const scanResult = await scanQRCode(canvas);
-          
+
           if (scanResult) {
             console.log("Decode success");
             setRxStats((prev) => ({ ...prev, totalFramesScanned: prev.totalFramesScanned + 1 }));
@@ -470,7 +470,7 @@ function App() {
           setReceivedMeta(meta);
           receivedMetaRef.current = meta;
           setScanStatus("receiving");
-          
+
           // Pre-initialize fountain decoder if needed
           if (!fountainDecoderRef.current) {
             fountainDecoderRef.current = new FountainDecoder(meta.totalBlocks, meta.blockSize);
@@ -485,10 +485,10 @@ function App() {
     // Handle Sequential frame
     if (type === FrameType.Sequential) {
       if (!receivedMetaRef.current) return; // ignore data if we don't have metadata yet
-      
+
       try {
         const { blockIndex, payload } = decodeSequentialFrame(bytes);
-        
+
         if (seqBlocksMapRef.current.has(blockIndex)) {
           console.log("Duplicate symbol dropped");
           setRxStats((prev) => ({ ...prev, duplicateFrames: prev.duplicateFrames + 1 }));
@@ -537,10 +537,10 @@ function App() {
 
         const redundantBefore = fountainDecoderRef.current.redundantSymbols;
         const symbol: FountainSymbol = { seed, degree, payload };
-        
+
         const isDone = fountainDecoderRef.current.processSymbol(symbol);
         const redundantAfter = fountainDecoderRef.current.redundantSymbols;
-        
+
         const resolvedCountAfter = fountainDecoderRef.current.getResolvedCount();
         setResolvedBlocksCount(resolvedCountAfter);
 
@@ -599,7 +599,7 @@ function App() {
     const hashArray = new Uint8Array(hashBuffer);
 
     let isMatch = true;
-    
+
     // Hash check
     if (meta.fileHash.some((val) => val !== 0)) {
       for (let i = 0; i < 32; i++) {
@@ -639,7 +639,7 @@ function App() {
       <header className="header">
         <div className="logo-container">
           <div className="logo-icon">L</div>
-          <h1 className="app-title">Lumen (test 1)</h1>
+          <h1 className="app-title">Lumen (mini communication system)</h1>
         </div>
         <p className="app-subtitle">High-speed, rateless optical file transfer via QR code animation</p>
       </header>
@@ -676,31 +676,31 @@ function App() {
 
               <div className="form-group">
                 {transferType === "file" ? <>
-                <label className="form-label">Select File</label>
-                <div className="dropzone active" onClick={() => document.getElementById("file-picker")?.click()}>
-                  <div className="dropzone-icon">📁</div>
-                  <p style={{ margin: 0, fontSize: "14px", color: "var(--text-secondary)" }}>
-                    {sendFile ? "Click to change file" : "Drag and drop or click to select file"}
-                  </p>
-                  <input
-                    id="file-picker"
-                    type="file"
-                    style={{ display: "none" }}
-                    onChange={handleFileChange}
-                    disabled={isSending}
-                  />
-                </div>
-                
-                {sendFile && (
-                  <div className="file-info-bar">
-                    <div className="file-name" title={sendFile.name}>
-                      {sendFile.name}
-                    </div>
-                    <div className="file-size">
-                      {(sendFile.size / 1024).toFixed(1)} KB
-                    </div>
+                  <label className="form-label">Select File</label>
+                  <div className="dropzone active" onClick={() => document.getElementById("file-picker")?.click()}>
+                    <div className="dropzone-icon">📁</div>
+                    <p style={{ margin: 0, fontSize: "14px", color: "var(--text-secondary)" }}>
+                      {sendFile ? "Click to change file" : "Drag and drop or click to select file"}
+                    </p>
+                    <input
+                      id="file-picker"
+                      type="file"
+                      style={{ display: "none" }}
+                      onChange={handleFileChange}
+                      disabled={isSending}
+                    />
                   </div>
-                )}
+
+                  {sendFile && (
+                    <div className="file-info-bar">
+                      <div className="file-name" title={sendFile.name}>
+                        {sendFile.name}
+                      </div>
+                      <div className="file-size">
+                        {(sendFile.size / 1024).toFixed(1)} KB
+                      </div>
+                    </div>
+                  )}
                 </> : <>
                   <label className="form-label" htmlFor="message-input">Write Message</label>
                   <textarea id="message-input" className="message-input" value={sendText} onChange={handleTextChange} placeholder="Type the message you want to send..." disabled={isSending} rows={9} />
@@ -894,7 +894,7 @@ function App() {
             {/* Right Column: Decoding Stats and Downloads */}
             <div style={{ textAlign: "left" }}>
               <h2 style={{ marginBottom: "20px" }}>Receiver Status</h2>
-              
+
               <div className="form-group">
                 <span className={`status-badge ${scanStatus}`}>
                   {scanStatus === "idle" && "Idle"}
@@ -963,7 +963,7 @@ function App() {
               {hashMatches === "matched" && (
                 <div className="hash-verified">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <polyline points="20 6 9 17 4 12"/>
+                    <polyline points="20 6 9 17 4 12" />
                   </svg>
                   SHA-256 Hash Match Verified (Integrity Check Passed)
                 </div>
@@ -972,9 +972,9 @@ function App() {
               {hashMatches === "mismatch" && (
                 <div className="hash-failed">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <circle cx="12" cy="12" r="10"/>
-                    <line x1="12" y1="8" x2="12" y2="12"/>
-                    <line x1="12" y1="16" x2="12.01" y2="16"/>
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
                   </svg>
                   SHA-256 Integrity Error: Hash Mismatch
                 </div>
