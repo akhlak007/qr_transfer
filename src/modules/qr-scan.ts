@@ -25,7 +25,7 @@ export async function scanQRCode(
     const results = await readBarcodes(imageData, {
       formats: ["QRCode"],
       tryHarder: false, // Turn off for speed during video frame scanning
-      tryRotate: true,
+      tryRotate: false,
     });
 
     if (results && results.length > 0) {

@@ -672,8 +672,8 @@ function App() {
                   type="range"
                   className="form-input-range"
                   min="256"
-                  max="1400"
-                  step="64"
+                  max="2900"
+                  step="100"
                   value={blockSize}
                   onChange={(e) => setBlockSize(parseInt(e.target.value))}
                   disabled={isSending}
@@ -689,7 +689,7 @@ function App() {
                   type="range"
                   className="form-input-range"
                   min="2"
-                  max="30"
+                  max="60"
                   step="1"
                   value={fps}
                   onChange={(e) => setFps(parseInt(e.target.value))}
