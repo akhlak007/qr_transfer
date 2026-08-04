@@ -1009,9 +1009,6 @@ function App() {
         )}
       </main>
 
-      <footer className="footer">
-        Powered by Antigravity AI | <a href="https://github.com/Sec-ant/zxing-wasm" target="_blank" rel="noreferrer">zxing-wasm</a> & <a href="https://github.com/soldair/node-qrcode" target="_blank" rel="noreferrer">node-qrcode</a>
-      </footer>
     </>
   );
 }
