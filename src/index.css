@@ -218,6 +218,43 @@ body {
   border: 2px solid #000;
 }
 
+.transfer-type-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  border: var(--border-w) solid #000;
+  box-shadow: var(--shadow-sm) var(--shadow-sm) 0 #000;
+}
+
+.transfer-type-btn {
+  border: 0;
+  border-right: var(--border-w) solid #000;
+  padding: 11px 14px;
+  background: #fff;
+  color: #000;
+  cursor: pointer;
+  font: 800 15px var(--font-sans);
+  text-transform: uppercase;
+}
+
+.transfer-type-btn:last-child { border-right: 0; }
+.transfer-type-btn.active { background: var(--color-purple); }
+.transfer-type-btn:disabled { cursor: not-allowed; opacity: 0.65; }
+
+.message-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 180px;
+  border: var(--border-w) solid #000;
+  box-shadow: var(--shadow-sm) var(--shadow-sm) 0 #000;
+  padding: 12px 14px;
+  background: #fff;
+  color: #000;
+  font: 500 16px/1.45 var(--font-sans);
+}
+
+.message-byte-count { margin-top: 10px; font: 800 13px var(--font-mono); text-align: right; }
+
 /* File Drop Zone */
 .dropzone {
   border: var(--border-w) dashed #000;
@@ -544,4 +581,25 @@ body {
   box-shadow: 2px 2px 0px #000;
   margin-top: 16px;
   text-transform: uppercase;
+}
+
+.received-message-container {
+  margin-top: 32px;
+  padding: 20px;
+  background: var(--color-purple);
+  border: var(--border-w) solid #000;
+  box-shadow: var(--shadow-w) var(--shadow-w) 0 #000;
+}
+
+.received-message-title { margin-bottom: 12px; font-size: 20px; font-weight: 900; text-transform: uppercase; }
+
+.received-message-body {
+  margin-bottom: 18px;
+  padding: 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: #fff;
+  border: var(--border-w) solid #000;
+  font-size: 17px;
+  line-height: 1.5;
 }

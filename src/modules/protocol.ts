@@ -8,6 +8,7 @@ export const FrameType = {
 export type FrameType = typeof FrameType[keyof typeof FrameType];
 
 export interface FileMetadata {
+  dataType: "file" | "message";
   fileSize: number;
   blockSize: number;
   totalBlocks: number;
@@ -30,18 +31,19 @@ export interface FountainFrame extends FountainSymbol {
 export function encodeMetadataFrame(metadata: FileMetadata): Uint8Array {
   const encoder = new TextEncoder();
   const nameBytes = encoder.encode(metadata.fileName);
-  const frame = new Uint8Array(1 + 4 + 4 + 4 + 32 + 2 + nameBytes.length);
+  const frame = new Uint8Array(1 + 1 + 4 + 4 + 4 + 32 + 2 + nameBytes.length);
 
   const view = new DataView(frame.buffer);
   
   view.setUint8(0, FrameType.Metadata);
-  view.setUint32(1, metadata.fileSize);
-  view.setUint32(5, metadata.blockSize);
-  view.setUint32(9, metadata.totalBlocks);
+  view.setUint8(1, metadata.dataType === "message" ? 1 : 0);
+  view.setUint32(2, metadata.fileSize);
+  view.setUint32(6, metadata.blockSize);
+  view.setUint32(10, metadata.totalBlocks);
   
-  frame.set(metadata.fileHash, 13);
-  view.setUint16(45, nameBytes.length);
-  frame.set(nameBytes, 47);
+  frame.set(metadata.fileHash, 14);
+  view.setUint16(46, nameBytes.length);
+  frame.set(nameBytes, 48);
 
   return frame;
 }
@@ -50,22 +52,31 @@ export function encodeMetadataFrame(metadata: FileMetadata): Uint8Array {
  * Decodes a binary frame into file metadata.
  */
 export function decodeMetadataFrame(frame: Uint8Array): FileMetadata {
-  if (frame[0] !== FrameType.Metadata) {
+  const fixedHeaderLength = 48;
+  if (frame.length < fixedHeaderLength || frame[0] !== FrameType.Metadata) {
     throw new Error("Invalid frame type for metadata");
   }
 
   const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
-  const fileSize = view.getUint32(1);
-  const blockSize = view.getUint32(5);
-  const totalBlocks = view.getUint32(9);
+  const dataTypeFlag = view.getUint8(1);
+  if (dataTypeFlag !== 0 && dataTypeFlag !== 1) {
+    throw new Error("Invalid metadata data type");
+  }
+  const dataType: "file" | "message" = dataTypeFlag === 1 ? "message" : "file";
+  const fileSize = view.getUint32(2);
+  const blockSize = view.getUint32(6);
+  const totalBlocks = view.getUint32(10);
   
-  const fileHash = frame.slice(13, 45);
-  const nameLength = view.getUint16(45);
+  const fileHash = frame.slice(14, 46);
+  const nameLength = view.getUint16(46);
+  if (frame.length < fixedHeaderLength + nameLength) {
+    throw new Error("Metadata frame is truncated");
+  }
   
   const decoder = new TextDecoder();
-  const fileName = decoder.decode(frame.subarray(47, 47 + nameLength));
+  const fileName = decoder.decode(frame.subarray(48, 48 + nameLength));
 
-  return { fileSize, blockSize, totalBlocks, fileHash, fileName };
+  return { dataType, fileSize, blockSize, totalBlocks, fileHash, fileName };
 }
 
 /**

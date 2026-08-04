@@ -54,6 +54,8 @@ function App() {
   }, []);
 
   // --- SENDER STATE ---
+  const [transferType, setTransferType] = useState<"file" | "message">("file");
+  const [sendText, setSendText] = useState("");
   const [sendFile, setSendFile] = useState<File | null>(null);
   const [sendMode, setSendMode] = useState<"fountain" | "sequential">("fountain");
   const [blockSize, setBlockSize] = useState<number>(512); // default 512 bytes
@@ -76,7 +78,7 @@ function App() {
   const chunksRef = useRef<Uint8Array[]>([]);
   const fountainEncoderRef = useRef<FountainEncoder | null>(null);
 
-  // File loading
+  // File and message loading
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -105,6 +107,35 @@ function App() {
     });
   };
 
+  const handleTextChange = async (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const text = e.target.value;
+    setSendText(text);
+    setIsSending(false);
+
+    if (!text.trim()) {
+      fileBytesRef.current = null;
+      return;
+    }
+
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode(text);
+    fileBytesRef.current = bytes;
+
+    const hashBuffer = await crypto.subtle.digest("SHA-256", bytes.buffer as ArrayBuffer);
+    fileHashRef.current = new Uint8Array(hashBuffer);
+
+    const blocks = chunkFile(bytes, blockSize);
+    chunksRef.current = blocks;
+    fountainEncoderRef.current = new FountainEncoder(blocks, blockSize);
+
+    setSenderStats({
+      totalBlocks: blocks.length,
+      framesSent: 0,
+      currentFrameIndex: 0,
+      fountainSeed: 0,
+    });
+  };
+
   // Adjust chunk list if block size changes
   useEffect(() => {
     if (fileBytesRef.current) {
@@ -120,7 +151,9 @@ function App() {
 
   // Start / Pause / Stop loop
   const toggleSend = () => {
-    if (!sendFile || !fileBytesRef.current || !fileHashRef.current) return;
+    if (transferType === "file" && !sendFile) return;
+    if (transferType === "message" && !sendText.trim()) return;
+    if (!fileBytesRef.current || !fileHashRef.current) return;
     
     if (isSending) {
       // Pause
@@ -156,12 +189,13 @@ function App() {
     let frameCounter = senderStats.framesSent;
     let seqIndex = senderStats.currentFrameIndex;
 
-    const metadata = {
+    const metadata: FileMetadata = {
+      dataType: transferType,
       fileSize: fileBytesRef.current!.length,
       blockSize: blockSize,
       totalBlocks: chunksRef.current.length,
       fileHash: fileHashRef.current!,
-      fileName: sendFile!.name,
+      fileName: transferType === "file" ? sendFile!.name : "message",
     };
 
     const intervalMs = 1000 / fps;
@@ -249,6 +283,7 @@ function App() {
   
   const [hashMatches, setHashMatches] = useState<"unchecked" | "matched" | "mismatch">("unchecked");
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [receivedMessage, setReceivedMessage] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const rxCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -330,6 +365,7 @@ function App() {
       URL.revokeObjectURL(downloadUrl);
       setDownloadUrl(null);
     }
+    setReceivedMessage(null);
     lastResolvedCountRef.current = 0;
     scannedFramesCountRef.current = 0;
     uniqueFramesCountRef.current = 0;
@@ -482,6 +518,7 @@ function App() {
         // Auto-initialize metadata placeholder if we missed the metadata frame but got a fountain frame
         if (!receivedMetaRef.current) {
           const placeholderMeta: FileMetadata = {
+            dataType: "file",
             fileSize: totalBlocks * payload.length, // approximation
             blockSize: payload.length,
             totalBlocks: totalBlocks,
@@ -577,10 +614,17 @@ function App() {
       setHashMatches("unchecked");
     }
 
-    // Create Download Link
-    const blob = new Blob([fileData.buffer as ArrayBuffer], { type: "application/octet-stream" });
-    const url = URL.createObjectURL(blob);
-    setDownloadUrl(url);
+    // Handle Message vs File
+    if (meta.dataType === "message") {
+      const decoder = new TextDecoder();
+      const text = decoder.decode(fileData);
+      setReceivedMessage(text);
+    } else {
+      // Create Download Link
+      const blob = new Blob([fileData.buffer as ArrayBuffer], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      setDownloadUrl(url);
+    }
   };
 
   // Stop camera if tab changes
@@ -620,9 +664,18 @@ function App() {
           <div className="card grid-2col">
             {/* Sender controls */}
             <div className="sender-controls">
-              <h2 style={{ textAlign: "left", marginBottom: "20px" }}>File Transfer Settings</h2>
+              <h2 style={{ textAlign: "left", marginBottom: "20px" }}>Transfer Settings</h2>
 
               <div className="form-group">
+                <label className="form-label">Transfer Type</label>
+                <div className="transfer-type-toggle" role="group" aria-label="Transfer type">
+                  <button type="button" className={`transfer-type-btn ${transferType === "file" ? "active" : ""}`} onClick={() => setTransferType("file")} disabled={isSending}>File</button>
+                  <button type="button" className={`transfer-type-btn ${transferType === "message" ? "active" : ""}`} onClick={() => setTransferType("message")} disabled={isSending}>Message</button>
+                </div>
+              </div>
+
+              <div className="form-group">
+                {transferType === "file" ? <>
                 <label className="form-label">Select File</label>
                 <div className="dropzone active" onClick={() => document.getElementById("file-picker")?.click()}>
                   <div className="dropzone-icon">📁</div>
@@ -648,6 +701,11 @@ function App() {
                     </div>
                   </div>
                 )}
+                </> : <>
+                  <label className="form-label" htmlFor="message-input">Write Message</label>
+                  <textarea id="message-input" className="message-input" value={sendText} onChange={handleTextChange} placeholder="Type the message you want to send..." disabled={isSending} rows={9} />
+                  <div className="message-byte-count">{new TextEncoder().encode(sendText).length.toLocaleString()} bytes</div>
+                </>}
               </div>
 
               <div className="form-group">
@@ -731,7 +789,7 @@ function App() {
                 <button
                   className={`btn ${isSending ? "btn-secondary" : "btn-primary"}`}
                   onClick={toggleSend}
-                  disabled={!sendFile}
+                  disabled={transferType === "file" ? !sendFile : !sendText.trim()}
                 >
                   {isSending ? <PauseIcon /> : <PlayIcon />}
                   {isSending ? "Pause Transmission" : "Start Transmission"}
@@ -765,10 +823,10 @@ function App() {
                         ? `Block: ${senderStats.currentFrameIndex + 1} / ${senderStats.totalBlocks}`
                         : `Current Seed: 0x${senderStats.fountainSeed.toString(16).toUpperCase()}`}
                     </div>
-                  ) : sendFile ? (
+                  ) : (transferType === "file" ? sendFile : sendText.trim()) ? (
                     "Ready. Click Start to stream QR codes."
                   ) : (
-                    "Select a file to begin."
+                    transferType === "file" ? "Select a file to begin." : "Write a message to begin."
                   )}
                 </div>
               </div>
@@ -856,7 +914,7 @@ function App() {
               {receivedMeta && (
                 <div style={{ marginBottom: "24px" }}>
                   <div style={{ fontWeight: 600, fontSize: "16px", marginBottom: "4px" }}>
-                    File: {receivedMeta.fileName}
+                    {receivedMeta.dataType === "message" ? "Incoming message" : `File: ${receivedMeta.fileName}`}
                   </div>
                   <div style={{ color: "var(--text-secondary)", fontSize: "14px", fontFamily: "var(--font-mono)" }}>
                     Size: {(receivedMeta.fileSize / 1024).toFixed(1)} KB | Blocks: {receivedMeta.totalBlocks} | Size/Block: {receivedMeta.blockSize} B
@@ -936,6 +994,14 @@ function App() {
                   <button className="btn btn-secondary" onClick={resetReceiverState}>
                     Reset Scanner
                   </button>
+                </div>
+              )}
+
+              {receivedMessage !== null && receivedMeta?.dataType === "message" && (
+                <div className="received-message-container">
+                  <div className="received-message-title">Message Received</div>
+                  <div className="received-message-body">{receivedMessage}</div>
+                  <button className="btn btn-secondary" onClick={resetReceiverState}>Reset Scanner</button>
                 </div>
               )}
             </div>
