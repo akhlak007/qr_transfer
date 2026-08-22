@@ -40,6 +40,11 @@ test("does not mark receiver replay recoverable without exact durable state", ()
   assert.equal(canRecoverReceiver({ hasExactMetadata: true, durableAcceptedSymbols: 1, storageAvailable: true }), true);
   assert.equal(canRecoverReceiver({ hasExactMetadata: false, durableAcceptedSymbols: 10, storageAvailable: true }), false);
   assert.equal(canRecoverReceiver({ hasExactMetadata: true, durableAcceptedSymbols: 0, storageAvailable: true }), false);
+  const activeReceiver = transitionSession(session("receive"), "active");
+  assert.throws(() => transitionSession(activeReceiver, "recoverable"), /lacks exact durable/);
+  const recoverable = transitionSession(activeReceiver, "recoverable", 20, { hasExactMetadata: true, durableAcceptedSymbols: 1, storageAvailable: true });
+  assert.equal(recoverable.status, "recoverable");
+  assert.throws(() => setResumeCapability(activeReceiver, "replay-receiver"), /lacks exact durable/);
 });
 
 test("sender restart requires QR identity and exact re-selection", () => {

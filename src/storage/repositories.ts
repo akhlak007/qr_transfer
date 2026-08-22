@@ -2,6 +2,7 @@ import type { SessionCheckpoint, TransferSession } from "../core/transfer-sessio
 import type { TestRun } from "../research/test-run";
 
 export interface PersistedSymbol {
+  schemaVersion: 1;
   transferId: string;
   symbolKey: string;
   seed: number;
@@ -12,10 +13,13 @@ export interface PersistedSymbol {
 }
 
 export interface PersistedChunk {
+  schemaVersion: 1;
   transferId: string;
   chunkIndex: number;
   bytes: Uint8Array;
   logicalLength: number;
+  blockSize: number;
+  checksumHex: string | null;
   persistedAt: number;
 }
 

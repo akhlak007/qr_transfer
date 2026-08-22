@@ -38,9 +38,17 @@ test("excludes drafts and keeps simulated results out of physical maximums", () 
 });
 
 test("reports a maximum only for physically verified transfers", () => {
-  const physical = run({ evidenceKind: "physical", metrics: { ...run().metrics, fileSize: 500 } });
-  const mismatch = run({ runId: "failed", evidenceKind: "physical", integrityStatus: "mismatch", metrics: { ...run().metrics, fileSize: 900 } });
+  const physicalEvidence = { evidenceKind: "physical" as const, distanceCm: 10, environment: "normal" as const };
+  const physical = run({ ...physicalEvidence, metrics: { ...run().metrics, fileSize: 500, cameraFps: 30, screenFps: 10 } });
+  const mismatch = run({ ...physicalEvidence, runId: "failed", integrityStatus: "mismatch", metrics: { ...run().metrics, fileSize: 900, cameraFps: 30, screenFps: 10 } });
   const summary = summarizeRuns([physical, mismatch], TransportId.QR, "physical");
   assert.equal(summary.sampleCount, 2);
   assert.equal(summary.maximumPhysicallyVerifiedFileSize, 500);
+});
+
+test("rejects malformed or incomplete physical evidence from aggregates", () => {
+  const malformed = run({ evidenceKind: "physical", fileHashHex: "", distanceCm: 10, environment: "normal", metrics: { ...run().metrics, cameraFps: 30, screenFps: 10 } });
+  const summary = summarizeRuns([malformed], TransportId.QR, "physical");
+  assert.equal(summary.sampleCount, 0);
+  assert.equal(summary.maximumPhysicallyVerifiedFileSize, null);
 });
