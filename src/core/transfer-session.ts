@@ -6,6 +6,7 @@ export type TransferStatus =
   | "ready"
   | "active"
   | "paused"
+  | "recoverable"
   | "complete"
   | "failed"
   | "cancelled";
@@ -21,6 +22,7 @@ export interface FileIdentity {
 }
 
 export interface TransferSession {
+  schemaVersion: 1;
   transferId: string;
   protocolVersion: number;
   direction: TransferDirection;
@@ -31,6 +33,26 @@ export interface TransferSession {
   status: TransferStatus;
   createdAt: number;
   updatedAt: number;
+  completedAt: number | null;
+  resumeCapability: ResumeCapability;
+  encodingMode: "fountain" | "sequential";
+  acceptedSymbols: number;
+  resolvedBlocks: number;
+  checkpointVersion: number;
+  failureCode: string | null;
+  transportConfig: Record<string, unknown>;
+}
+
+export type ResumeCapability = "none" | "restart-sender" | "replay-receiver" | "complete";
+
+export interface SessionCheckpoint {
+  schemaVersion: 1;
+  transferId: string;
+  acceptedSymbols: number;
+  resolvedBlockIndices: number[];
+  persistedChunks: number;
+  metrics: Record<string, number | null>;
+  createdAt: number;
 }
 
 export function createTransferId(): string {

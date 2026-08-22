@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "test": "npm run test:unit && npm run test:fountain",
-    "test:unit": "tsx --test src/core/*.test.ts src/transports/qr/*.test.ts src/media/*.test.ts",
+    "test:unit": "tsx --test src/core/*.test.ts src/transports/qr/*.test.ts src/media/*.test.ts src/research/*.test.ts src/compatibility/*.test.ts src/storage/*.test.ts",
     "test:fountain": "tsx src/modules/fountain.test.ts",
     "benchmark:phase1": "tsx src/research/phase1-benchmark.ts",
     "lint": "oxlint",
