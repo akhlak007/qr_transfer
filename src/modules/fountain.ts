@@ -110,18 +110,20 @@ export class FountainEncoder {
   private blocks: Uint8Array[];
   private blockSize: number;
   private soliton: RobustSoliton;
+  private random: () => number;
 
-  constructor(blocks: Uint8Array[], blockSize: number) {
+  constructor(blocks: Uint8Array[], blockSize: number, random: () => number = Math.random) {
     this.blocks = blocks;
     this.blockSize = blockSize;
     this.soliton = new RobustSoliton(blocks.length);
+    this.random = random;
   }
 
   /**
    * Generates a new random fountain symbol.
    */
   public generateSymbol(): FountainSymbol {
-    const seed = Math.floor(Math.random() * 0xffffffff);
+    const seed = Math.floor(this.random() * 0xffffffff);
     const rng = mulberry32(seed);
     const degree = this.soliton.sample(rng());
     const indices = getIndicesFromSeed(seed, degree, this.blocks.length);

@@ -1,5 +1,5 @@
 import { chunkFile, reassembleFile } from "./chunker";
-import { FountainEncoder, FountainDecoder } from "./fountain";
+import { FountainEncoder, FountainDecoder, mulberry32 } from "./fountain";
 
 function runTest() {
   console.log("Starting Fountain Code offline simulation test...");
@@ -19,17 +19,18 @@ function runTest() {
   const blocks = chunkFile(originalBytes, blockSize);
   
   // 3. Initialize encoder
-  const encoder = new FountainEncoder(blocks, blockSize);
+  const encoder = new FountainEncoder(blocks, blockSize, mulberry32(0x4c554d45));
   
   // 4. Generate symbols
   const symbols = [];
-  const symbolLimit = Math.floor(K * 2.0); // Generate up to 200% of blocks
+  const symbolLimit = Math.floor(K * 4.0); // Deterministic ceiling for the peeling decoder
   for (let i = 0; i < symbolLimit; i++) {
     symbols.push(encoder.generateSymbol());
   }
   
   // Shuffle symbols to simulate out-of-order and dropped frames
-  symbols.sort(() => Math.random() - 0.5);
+  const shuffleRandom = mulberry32(0x51525354);
+  symbols.sort(() => shuffleRandom() - 0.5);
   
   // 5. Decode symbols sequentially
   const decoder = new FountainDecoder(K, blockSize);

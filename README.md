@@ -1,5 +1,7 @@
 # Lumen - Optical File Transfer via QR Codes
 
+> Lumen 2.0 is being developed as an experimental multi-mode optical communication platform. QR Streaming is the preserved working baseline. Screen-to-Camera VLC is Experimental and Visual OFDM is a Research Prototype; neither has verified mobile compatibility or performance results yet.
+
 Lumen (or `qr_transfer`) is a web-based, entirely offline application that allows you to transfer files between two devices optically using animated QR codes. It requires absolutely no internet connection, Bluetooth, or local network connection between the sender and receiver.
 
 The application is accessible directly from your browser and leverages the device screen and camera to stream data.
@@ -20,7 +22,7 @@ Because a camera might drop frames, blur, or lose focus, a standard sequential t
 This means the communication is strictly **one-way**. The receiver never has to ask the sender to "resend frame 5"; it simply waits for the next random frame to arrive.
 
 ### 3. High-Speed QR Streaming
-Each encoded symbol, along with its metadata (seed, degree, block count), is packaged into a binary frame (`modules/protocol.ts`). This frame is rendered into a QR code using the `qrcode` library on an HTML Canvas. The sender rapidly loops this rendering process at high frame rates (up to 60 FPS) to maximize throughput.
+Each encoded symbol, along with its metadata (seed, degree, block count), is packaged into a binary frame (`modules/protocol.ts`). This frame is rendered into a QR code using the `qrcode` library on an HTML Canvas. The sender exposes a requested frame-rate control and separately measures the achieved render rate; the requested value is not treated as measured throughput.
 
 ### 4. Optical Scanning Pipeline
 On the receiving end, the app requests access to the device camera using WebRTC. It captures frames from the video feed and scans them for QR codes using the highly optimized `zxing-wasm` library. To achieve the highest possible scanning frame rate, computational overheads like automatic image rotation (`tryRotate`) are disabled.
@@ -33,3 +35,11 @@ As the scanner decodes QR codes, it feeds the raw bytes into the Fountain Decode
 - **QR Generation**: `qrcode`
 - **QR Scanning**: `zxing-wasm`
 - **Styling**: Vanilla CSS
+
+## Measurement status
+
+The QR dashboard distinguishes camera frames, decode attempts, decoded QR frames, camera decode misses, invalid decodes, redundant symbols, accepted fountain symbols, camera FPS, achieved display FPS, decode time, throughput, elapsed time, ETA, and SHA-256 integrity. Camera decode misses are not described as transmitter packet loss because legacy frames do not yet contain sequence numbers.
+
+Android-to-Android, Android-to-iPhone, iPhone-to-Android, and iPhone-to-iPhone transfers remain **Not tested** until physical runs complete with matching SHA-256. No maximum mobile file size or optical throughput claim is currently published.
+
+Media files are transferred as arbitrary original bytes without recompression. Browser-supported image, audio, and video metadata is informational; matching byte size and SHA-256 are authoritative for a bit-perfect result.

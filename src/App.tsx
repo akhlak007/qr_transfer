@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { chunkFile, reassembleFile } from "./modules/chunker";
 import { FountainEncoder, FountainDecoder } from "./modules/fountain";
 import type { FountainSymbol } from "./modules/fountain";
@@ -15,6 +15,16 @@ import type { FileMetadata } from "./modules/protocol";
 import { renderQRToCanvas } from "./modules/qr-render";
 import { scanQRCode } from "./modules/qr-scan";
 import { prepareZXingModule } from "zxing-wasm/reader";
+import { sha256, createIntegrityResult } from "./core/integrity";
+import type { IntegrityResult as IntegrityResultModel } from "./core/integrity";
+import { extractMediaMetadata } from "./media/media-metadata";
+import type { MediaMetadata } from "./media/media-metadata";
+import { TransferStatistics } from "./components/TransferStatistics";
+import { OpticalSignalMetrics } from "./components/OpticalSignalMetrics";
+import { IntegrityResult } from "./components/IntegrityResult";
+import { MediaVerification } from "./components/MediaVerification";
+import { ModeBadge } from "./components/ModeBadge";
+import { TransportId } from "./core/transport";
 
 
 const PlayIcon = () => (
@@ -57,6 +67,7 @@ function App() {
   const [transferType, setTransferType] = useState<"file" | "message">("file");
   const [sendText, setSendText] = useState("");
   const [sendFile, setSendFile] = useState<File | null>(null);
+  const [sendMediaMetadata, setSendMediaMetadata] = useState<MediaMetadata | null>(null);
   const [sendMode, setSendMode] = useState<"fountain" | "sequential">("fountain");
   const [blockSize, setBlockSize] = useState<number>(512); // default 512 bytes
   const [fps, setFps] = useState<number>(10);
@@ -69,10 +80,16 @@ function App() {
     framesSent: 0,
     currentFrameIndex: 0,
     fountainSeed: 0,
+    achievedFps: 0,
+    averageRenderMs: 0,
   });
 
   const sendCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const sendTimerRef = useRef<number | null>(null);
+  const isSendingRef = useRef(false);
+  const sendLoopGenerationRef = useRef(0);
+  const senderFrameCounterRef = useRef(0);
+  const senderSequenceIndexRef = useRef(0);
   const fileBytesRef = useRef<Uint8Array | null>(null);
   const fileHashRef = useRef<Uint8Array | null>(null);
   const chunksRef = useRef<Uint8Array[]>([]);
@@ -83,6 +100,7 @@ function App() {
     const file = e.target.files?.[0];
     if (!file) return;
     setSendFile(file);
+    setSendMediaMetadata(await extractMediaMetadata(file, file.name));
     setIsSending(false);
 
     // Read file bytes
@@ -104,7 +122,11 @@ function App() {
       framesSent: 0,
       currentFrameIndex: 0,
       fountainSeed: 0,
+      achievedFps: 0,
+      averageRenderMs: 0,
     });
+    senderFrameCounterRef.current = 0;
+    senderSequenceIndexRef.current = 0;
   };
 
   const handleTextChange = async (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -133,7 +155,11 @@ function App() {
       framesSent: 0,
       currentFrameIndex: 0,
       fountainSeed: 0,
+      achievedFps: 0,
+      averageRenderMs: 0,
     });
+    senderFrameCounterRef.current = 0;
+    senderSequenceIndexRef.current = 0;
   };
 
   // Adjust chunk list if block size changes
@@ -157,22 +183,30 @@ function App() {
 
     if (isSending) {
       // Pause
-      if (sendTimerRef.current) clearInterval(sendTimerRef.current);
+      isSendingRef.current = false;
+      sendLoopGenerationRef.current++;
+      if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
       setIsSending(false);
     } else {
       // Start
+      isSendingRef.current = true;
       setIsSending(true);
-      startSendingLoop();
     }
   };
 
   const stopSending = () => {
-    if (sendTimerRef.current) clearInterval(sendTimerRef.current);
+    isSendingRef.current = false;
+    sendLoopGenerationRef.current++;
+    if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
     setIsSending(false);
+    senderFrameCounterRef.current = 0;
+    senderSequenceIndexRef.current = 0;
     setSenderStats((prev) => ({
       ...prev,
       framesSent: 0,
       currentFrameIndex: 0,
+      achievedFps: 0,
+      averageRenderMs: 0,
     }));
 
     // Clear canvas
@@ -183,11 +217,15 @@ function App() {
     }
   };
 
-  const startSendingLoop = () => {
-    if (sendTimerRef.current) clearInterval(sendTimerRef.current);
+  const startSendingLoop = useCallback(() => {
+    if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
+    const generation = ++sendLoopGenerationRef.current;
 
-    let frameCounter = senderStats.framesSent;
-    let seqIndex = senderStats.currentFrameIndex;
+    let frameCounter = senderFrameCounterRef.current;
+    let seqIndex = senderSequenceIndexRef.current;
+    let totalRenderMs = 0;
+    let renderedThisRun = 0;
+    const loopStartedAt = performance.now();
 
     const metadata: FileMetadata = {
       dataType: transferType,
@@ -200,7 +238,9 @@ function App() {
 
     const intervalMs = 1000 / fps;
 
-    sendTimerRef.current = window.setInterval(async () => {
+    const renderNextFrame = async () => {
+      if (!isSendingRef.current || generation !== sendLoopGenerationRef.current) return;
+      const tickStartedAt = performance.now();
       const canvas = sendCanvasRef.current;
       if (!canvas) return;
 
@@ -221,6 +261,7 @@ function App() {
           }));
 
           seqIndex = (seqIndex + 1) % chunksRef.current.length;
+          senderSequenceIndexRef.current = seqIndex;
         } else {
           // Fountain Mode
           if (!fountainEncoderRef.current) {
@@ -238,30 +279,48 @@ function App() {
 
       // Render frame to canvas
       try {
-        await renderQRToCanvas(canvas, frameData, { ecc: qrEcc, version: qrVersion });
+        const observation = await renderQRToCanvas(canvas, frameData, { ecc: qrEcc, version: qrVersion });
+        totalRenderMs += observation.durationMs;
       } catch (err) {
         console.error("QR Code rendering failed (data size might exceed QR version capacity):", err);
       }
 
+      if (!isSendingRef.current || generation !== sendLoopGenerationRef.current) return;
+
       frameCounter++;
+      renderedThisRun++;
+      senderFrameCounterRef.current = frameCounter;
+      const elapsedMs = Math.max(1, performance.now() - loopStartedAt);
       setSenderStats((prev) => ({
         ...prev,
         framesSent: frameCounter,
+        achievedFps: (renderedThisRun * 1000) / elapsedMs,
+        averageRenderMs: totalRenderMs / renderedThisRun,
       }));
-    }, intervalMs);
-  };
+
+      const renderElapsedMs = performance.now() - tickStartedAt;
+      sendTimerRef.current = window.setTimeout(renderNextFrame, Math.max(0, intervalMs - renderElapsedMs));
+    };
+
+    void renderNextFrame();
+  }, [blockSize, fps, qrEcc, qrVersion, sendFile, sendMode, transferType]);
 
   // Re-adjust interval if FPS changes during transmission
   useEffect(() => {
     if (isSending) {
       startSendingLoop();
     }
-  }, [fps, sendMode, qrEcc, qrVersion]);
+  }, [isSending, startSendingLoop]);
 
   // Clean up timer on unmount
   useEffect(() => {
+    const timerRef = sendTimerRef;
+    const sendingRef = isSendingRef;
+    const generationRef = sendLoopGenerationRef;
     return () => {
-      if (sendTimerRef.current) clearInterval(sendTimerRef.current);
+      sendingRef.current = false;
+      generationRef.current++;
+      if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, []);
 
@@ -275,15 +334,26 @@ function App() {
   // Progress/Metrics
   const [resolvedBlocksCount, setResolvedBlocksCount] = useState(0);
   const [rxStats, setRxStats] = useState({
-    totalFramesScanned: 0,
+    cameraFramesCaptured: 0,
+    decodeAttempts: 0,
+    decodedFrames: 0,
+    missedFrames: 0,
+    invalidFrames: 0,
     duplicateFrames: 0,
+    acceptedSymbols: 0,
     speedKbs: 0,
-    scanFps: 0,
+    cameraFps: 0,
+    decodeFps: 0,
+    averageDecodeMs: 0,
   });
 
   const [hashMatches, setHashMatches] = useState<"unchecked" | "matched" | "mismatch">("unchecked");
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [receivedMessage, setReceivedMessage] = useState<string | null>(null);
+  const [receivedMediaMetadata, setReceivedMediaMetadata] = useState<MediaMetadata | null>(null);
+  const [integrityResult, setIntegrityResult] = useState<IntegrityResultModel>({ status: "waiting", bitPerfect: false });
+  const rxStartedAtRef = useRef<number | null>(null);
+  const rxCompletedAtRef = useRef<number | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const rxCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -296,10 +366,10 @@ function App() {
   // Performance indicators
   const lastScanTimeRef = useRef<number>(0);
   const scannedFramesCountRef = useRef<number>(0);
+  const capturedFramesCountRef = useRef<number>(0);
+  const totalDecodeTimeRef = useRef<number>(0);
   const rxSpeedIntervalRef = useRef<number | null>(null);
   const lastResolvedCountRef = useRef<number>(0);
-  const uniqueFramesCountRef = useRef<number>(0);
-  const lastUniqueCountRef = useRef<number>(0);
 
   // Start Camera
   const startCamera = async (resume: boolean = false) => {
@@ -355,10 +425,17 @@ function App() {
     receivedMetaRef.current = null;
     setResolvedBlocksCount(0);
     setRxStats({
-      totalFramesScanned: 0,
+      cameraFramesCaptured: 0,
+      decodeAttempts: 0,
+      decodedFrames: 0,
+      missedFrames: 0,
+      invalidFrames: 0,
       duplicateFrames: 0,
+      acceptedSymbols: 0,
       speedKbs: 0,
-      scanFps: 0,
+      cameraFps: 0,
+      decodeFps: 0,
+      averageDecodeMs: 0,
     });
     setHashMatches("unchecked");
     if (downloadUrl) {
@@ -366,10 +443,14 @@ function App() {
       setDownloadUrl(null);
     }
     setReceivedMessage(null);
+    setReceivedMediaMetadata(null);
+    setIntegrityResult({ status: "waiting", bitPerfect: false });
+    rxStartedAtRef.current = null;
+    rxCompletedAtRef.current = null;
     lastResolvedCountRef.current = 0;
     scannedFramesCountRef.current = 0;
-    uniqueFramesCountRef.current = 0;
-    lastUniqueCountRef.current = 0;
+    capturedFramesCountRef.current = 0;
+    totalDecodeTimeRef.current = 0;
   };
 
   // Continuous QR Scanner Loop
@@ -398,9 +479,10 @@ function App() {
 
       if (receivedMetaRef.current) {
         // Calculate speed based on newly received unique frames/symbols
-        const diff = uniqueFramesCountRef.current - lastUniqueCountRef.current;
-        lastUniqueCountRef.current = uniqueFramesCountRef.current;
-        const speed = (diff * receivedMetaRef.current.blockSize) / 1024; // KB/s
+        const resolvedNow = fountainDecoderRef.current?.getResolvedCount() ?? seqBlocksMapRef.current.size;
+        const diff = Math.max(0, resolvedNow - lastResolvedCountRef.current);
+        lastResolvedCountRef.current = resolvedNow;
+        const speed = (diff * receivedMetaRef.current.blockSize) / 1024;
         setRxStats((prev) => ({
           ...prev,
           speedKbs: Math.round(speed),
@@ -425,23 +507,37 @@ function App() {
           }
           // Draw video frame to hidden canvas
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          capturedFramesCountRef.current++;
+          setRxStats((prev) => ({ ...prev, cameraFramesCaptured: prev.cameraFramesCaptured + 1 }));
 
           // Measure scan FPS
           const now = performance.now();
           scannedFramesCountRef.current++;
           if (now - lastFpsTime >= 1000) {
-            const fps = Math.round((scannedFramesCountRef.current * 1000) / (now - lastFpsTime));
-            setRxStats((prev) => ({ ...prev, scanFps: fps }));
+            const elapsed = now - lastFpsTime;
+            const decodeFps = Math.round((scannedFramesCountRef.current * 1000) / elapsed);
+            const cameraFps = Math.round((capturedFramesCountRef.current * 1000) / elapsed);
+            setRxStats((prev) => ({ ...prev, decodeFps, cameraFps }));
             scannedFramesCountRef.current = 0;
+            capturedFramesCountRef.current = 0;
             lastFpsTime = now;
           }
 
           // Scan QR from Canvas
           const scanResult = await scanQRCode(canvas);
 
-          if (scanResult) {
+          totalDecodeTimeRef.current += scanResult.durationMs;
+          setRxStats((prev) => ({
+            ...prev,
+            decodeAttempts: prev.decodeAttempts + 1,
+            averageDecodeMs: totalDecodeTimeRef.current / (prev.decodeAttempts + 1),
+            decodedFrames: prev.decodedFrames + (scanResult.outcome === "decoded" ? 1 : 0),
+            missedFrames: prev.missedFrames + (scanResult.outcome === "no-signal" ? 1 : 0),
+            invalidFrames: prev.invalidFrames + (scanResult.outcome === "invalid" ? 1 : 0),
+          }));
+
+          if (scanResult.outcome === "decoded" && scanResult.bytes) {
             console.log("Decode success");
-            setRxStats((prev) => ({ ...prev, totalFramesScanned: prev.totalFramesScanned + 1 }));
             await processScannedBytes(scanResult.bytes);
           }
         }
@@ -470,6 +566,7 @@ function App() {
           setReceivedMeta(meta);
           receivedMetaRef.current = meta;
           setScanStatus("receiving");
+          if (rxStartedAtRef.current === null) rxStartedAtRef.current = performance.now();
 
           // Pre-initialize fountain decoder if needed
           if (!fountainDecoderRef.current) {
@@ -494,7 +591,7 @@ function App() {
           setRxStats((prev) => ({ ...prev, duplicateFrames: prev.duplicateFrames + 1 }));
         } else {
           console.log("Symbol accepted");
-          uniqueFramesCountRef.current++;
+          setRxStats((prev) => ({ ...prev, acceptedSymbols: prev.acceptedSymbols + 1 }));
           seqBlocksMapRef.current.set(blockIndex, payload);
           const currentCount = seqBlocksMapRef.current.size;
           setResolvedBlocksCount(currentCount);
@@ -528,6 +625,7 @@ function App() {
           setReceivedMeta(placeholderMeta);
           receivedMetaRef.current = placeholderMeta;
           setScanStatus("receiving");
+          if (rxStartedAtRef.current === null) rxStartedAtRef.current = performance.now();
         }
 
         const K = totalBlocks;
@@ -549,7 +647,7 @@ function App() {
           setRxStats((prev) => ({ ...prev, duplicateFrames: prev.duplicateFrames + 1 }));
         } else {
           console.log("Symbol accepted");
-          uniqueFramesCountRef.current++;
+          setRxStats((prev) => ({ ...prev, acceptedSymbols: prev.acceptedSymbols + 1 }));
         }
 
         if (isDone) {
@@ -568,6 +666,7 @@ function App() {
     if (!meta) return;
     stopCamera();
     setScanStatus("success");
+    rxCompletedAtRef.current = performance.now();
 
     // Collect blocks in order
     const blocks: Uint8Array[] = [];
@@ -584,6 +683,7 @@ function App() {
     if (!meta || !fountainDecoderRef.current) return;
     stopCamera();
     setScanStatus("success");
+    rxCompletedAtRef.current = performance.now();
 
     const blocks = fountainDecoderRef.current.getResolvedBlocks();
     const fileData = reassembleFile(blocks, meta.fileSize, meta.blockSize);
@@ -595,8 +695,8 @@ function App() {
     if (!meta) return;
 
     // Verify SHA-256 Hash
-    const hashBuffer = await crypto.subtle.digest("SHA-256", fileData.buffer as ArrayBuffer);
-    const hashArray = new Uint8Array(hashBuffer);
+    setIntegrityResult({ status: "verifying", bitPerfect: false });
+    const hashArray = await sha256(fileData);
 
     let isMatch = true;
 
@@ -609,9 +709,11 @@ function App() {
         }
       }
       setHashMatches(isMatch ? "matched" : "mismatch");
+      setIntegrityResult(createIntegrityResult(meta.fileHash, hashArray, meta.fileSize, fileData.byteLength));
     } else {
       // If we missed metadata, hash is unchecked
       setHashMatches("unchecked");
+      setIntegrityResult(createIntegrityResult(null, hashArray, meta.fileSize, fileData.byteLength));
     }
 
     // Handle Message vs File
@@ -622,6 +724,7 @@ function App() {
     } else {
       // Create Download Link
       const blob = new Blob([fileData.buffer as ArrayBuffer], { type: "application/octet-stream" });
+      setReceivedMediaMetadata(await extractMediaMetadata(blob, meta.fileName));
       const url = URL.createObjectURL(blob);
       setDownloadUrl(url);
     }
@@ -632,7 +735,17 @@ function App() {
     if (activeTab !== "receive" && isCameraActive) {
       stopCamera();
     }
-  }, [activeTab]);
+  }, [activeTab, isCameraActive]);
+
+  const recoveredBytes = receivedMeta
+    ? Math.min(receivedMeta.fileSize, resolvedBlocksCount * receivedMeta.blockSize)
+    : 0;
+  const receiverElapsedMs = rxStartedAtRef.current === null
+    ? 0
+    : (rxCompletedAtRef.current ?? performance.now()) - rxStartedAtRef.current;
+  const receiverRemainingMs = receivedMeta && recoveredBytes < receivedMeta.fileSize && rxStats.speedKbs > 0
+    ? ((receivedMeta.fileSize - recoveredBytes) / (rxStats.speedKbs * 1024)) * 1000
+    : recoveredBytes >= (receivedMeta?.fileSize ?? Number.POSITIVE_INFINITY) ? 0 : null;
 
   return (
     <>
@@ -666,7 +779,7 @@ function App() {
             Using Only Light.
           </h1>
           <p className="ollyo-hero-subtitle">
-            A high-performance optical data transfer platform that securely moves files and messages between devices using only a display and camera. No WiFi. No Bluetooth. No USB. No Internet. No Cloud.
+            A browser-based research platform for moving original file bytes from a screen to a camera without a transfer network. QR Streaming is the measured baseline; VLC and Visual OFDM remain research modes.
           </p>
           <div className="ollyo-hero-actions">
             <a href="#demo" className="ollyo-btn-main">Launch Live Demo</a>
@@ -680,13 +793,13 @@ function App() {
         <div className="ollyo-container">
           <div className="ollyo-section-label">THE PROBLEM</div>
           <h2 className="ollyo-editorial-headline">
-            Networks fail. Cameras don't.
+            Some environments cannot use a transfer network.
           </h2>
           <div className="ollyo-editorial-grid">
             <div className="ollyo-editorial-block">
               <h3>Why WiFi Fails</h3>
               <p>
-                In air-gapped zones and secure facilities, wireless radio signals create catastrophic attack vectors. RF congestion, rogue access points, and remote packet sniffing make network adapters unviable for sensitive data.
+                Network interfaces may be unavailable, restricted, congested, or unsuitable for a particular experiment. Lumen investigates a local screen-to-camera alternative.
               </p>
             </div>
             <div className="ollyo-editorial-block">
@@ -714,15 +827,15 @@ function App() {
           </h2>
           <div className="ollyo-editorial-grid">
             <div className="ollyo-editorial-block">
-              <h3>Zero-Emission Channel</h3>
+              <h3>Visible Optical Channel</h3>
               <p>
-                Lumen encodes data into a continuous visual stream of high-density QR code animations. The data travels through ambient photons in the room, producing zero radio emissions and zero network trace.
+                Lumen encodes bytes into visual frames shown on a display and observed by a nearby camera. The current transfer path does not require a network connection between the devices.
               </p>
             </div>
             <div className="ollyo-editorial-block">
               <h3>Strict One-Way Isolation</h3>
               <p>
-                Because visual light cannot be back-channeled or remote controlled, optical transmission forms an absolute physical diode. Data flows strictly from the screen to the camera sensor.
+                The baseline application uses a one-way screen-to-camera data path. Security properties depend on the surrounding devices and environment and are not assumed from the optical medium alone.
               </p>
             </div>
             <div className="ollyo-editorial-block">
@@ -776,7 +889,7 @@ function App() {
             <div className="ollyo-pipe-step">
               <div className="ollyo-pipe-badge">06</div>
               <h5>Reassembly</h5>
-              <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>100% Integrity Verified</p>
+              <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>SHA-256 Result</p>
             </div>
           </div>
         </div>
@@ -797,8 +910,8 @@ function App() {
             </div>
             <div className="ollyo-feature-card">
               <div className="ollyo-feature-num">02</div>
-              <h3>Cross Platform</h3>
-              <p>Runs natively in any modern web browser across Windows, macOS, Linux, iOS, and Android devices.</p>
+              <h3>Cross-Platform Validation</h3>
+              <p>Android and iPhone device pairs remain explicitly Not tested until a recorded transfer completes with matching SHA-256.</p>
             </div>
             <div className="ollyo-feature-card">
               <div className="ollyo-feature-num">03</div>
@@ -807,8 +920,8 @@ function App() {
             </div>
             <div className="ollyo-feature-card">
               <div className="ollyo-feature-num">04</div>
-              <h3>Enterprise Ready</h3>
-              <p>Includes full SHA-256 cryptographic integrity verification and instant text messaging capability.</p>
+              <h3>Integrity Instrumented</h3>
+              <p>Compares the reconstructed byte length and SHA-256 with sender metadata before reporting a bit-perfect transfer.</p>
             </div>
             <div className="ollyo-feature-card">
               <div className="ollyo-feature-num">05</div>
@@ -829,24 +942,24 @@ function App() {
         <div className="ollyo-container">
           <div className="ollyo-section-label">PERFORMANCE METRICS</div>
           <h2 className="ollyo-editorial-headline">
-            Uncompromising Speed & Reliability.
+            Measurements, not marketing estimates.
           </h2>
           <div className="ollyo-metrics-grid">
             <div className="ollyo-metric-card">
-              <div className="ollyo-metric-val">60 FPS</div>
-              <div className="ollyo-metric-lbl">Max Optical Display Frame Rate</div>
+              <div className="ollyo-metric-val">Live</div>
+              <div className="ollyo-metric-lbl">Requested vs Achieved Screen FPS</div>
             </div>
             <div className="ollyo-metric-card">
-              <div className="ollyo-metric-val">2.9 KB</div>
-              <div className="ollyo-metric-lbl">Payload Capacity per QR Frame</div>
+              <div className="ollyo-metric-val">Live</div>
+              <div className="ollyo-metric-lbl">Effective Throughput</div>
             </div>
             <div className="ollyo-metric-card">
-              <div className="ollyo-metric-val">100%</div>
-              <div className="ollyo-metric-lbl">Forward Error Recovery Guarantee</div>
+              <div className="ollyo-metric-val">SHA-256</div>
+              <div className="ollyo-metric-lbl">Bit-Perfect Completion Check</div>
             </div>
             <div className="ollyo-metric-card">
-              <div className="ollyo-metric-val">0 Bytes</div>
-              <div className="ollyo-metric-lbl">Network & Cloud Bandwidth Used</div>
+              <div className="ollyo-metric-val">Not tested</div>
+              <div className="ollyo-metric-lbl">Maximum Validated Mobile File Size</div>
             </div>
           </div>
         </div>
@@ -857,18 +970,18 @@ function App() {
         <div className="ollyo-container">
           <div className="ollyo-section-label">ENTERPRISE USE CASES</div>
           <h2 className="ollyo-editorial-headline">
-            Deployed in Zero-Trust Environments.
+            Candidate research scenarios.
           </h2>
           <div className="ollyo-usecases-grid">
             <div className="ollyo-usecase-card">
               <div className="ollyo-usecase-tag">DEFENSE & GOV</div>
               <h4>Air-Gapped Intelligence</h4>
-              <p>Safely export intelligence payloads and reports out of physically isolated secure facilities (SCIFs).</p>
+              <p>Study controlled optical export workflows in isolated laboratory environments after an appropriate security review.</p>
             </div>
             <div className="ollyo-usecase-card">
               <div className="ollyo-usecase-tag">HEALTHCARE</div>
-              <h4>HIPAA Patient Record Sync</h4>
-              <p>Transfer sensitive medical records between clinical diagnostic tablets without exposing patient data to network eavesdropping.</p>
+              <h4>Clinical Device Research</h4>
+              <p>Evaluate offline transfer mechanics using synthetic data; production medical use requires separate privacy, security, and regulatory validation.</p>
             </div>
             <div className="ollyo-usecase-card">
               <div className="ollyo-usecase-tag">INDUSTRIAL & SCADA</div>
@@ -960,6 +1073,7 @@ function App() {
                             </div>
                           </div>
                         )}
+                        {sendMediaMetadata && <MediaVerification metadata={sendMediaMetadata} />}
                       </> : <>
                         <label className="form-label" htmlFor="message-input">Write Message</label>
                         <textarea id="message-input" className="message-input" value={sendText} onChange={handleTextChange} placeholder="Type the message you want to send..." disabled={isSending} rows={9} />
@@ -968,7 +1082,16 @@ function App() {
                     </div>
 
                     <div className="form-group">
-                      <label className="form-label">Transmission Mode</label>
+                      <label className="form-label">Optical Transport</label>
+                      <div className="mode-selector" role="list" aria-label="Optical transports">
+                        <button type="button" className="mode-option selected" disabled={isSending}><ModeBadge transport={TransportId.QR} /><small>Available baseline</small></button>
+                        <button type="button" className="mode-option" disabled><ModeBadge transport={TransportId.VLC} /><small>Brightness + RGB planned for Phase 3</small></button>
+                        <button type="button" className="mode-option" disabled><ModeBadge transport={TransportId.VisualOFDM} /><small>Planned for Phase 4</small></button>
+                      </div>
+                    </div>
+
+                    <div className="form-group">
+                      <label className="form-label">QR Reliability Mode</label>
                       <select
                         className="form-select"
                         value={sendMode}
@@ -1077,6 +1200,8 @@ function App() {
                             <span style={{ color: "var(--color-accent)", fontWeight: "bold" }}>● TRANSMITTING</span>
                             <br />
                             Frames sent: {senderStats.framesSent}
+                            <br />
+                            Achieved: {senderStats.achievedFps.toFixed(1)} FPS | Render: {senderStats.averageRenderMs.toFixed(1)} ms
                             <br />
                             {sendMode === "sequential"
                               ? `Block: ${senderStats.currentFrameIndex + 1} / ${senderStats.totalBlocks}`
@@ -1200,24 +1325,29 @@ function App() {
                       </div>
                     </div>
 
-                    <div className="stats-grid">
-                      <div className="stat-item">
-                        <div className="stat-label">Total Frames Processed</div>
-                        <div className="stat-value">{rxStats.totalFramesScanned}</div>
-                      </div>
-                      <div className="stat-item">
-                        <div className="stat-label">Duplicate/Redundant</div>
-                        <div className="stat-value">{rxStats.duplicateFrames}</div>
-                      </div>
-                      <div className="stat-item">
-                        <div className="stat-label">Current Scan Rate</div>
-                        <div className="stat-value">{rxStats.scanFps} FPS</div>
-                      </div>
-                      <div className="stat-item">
-                        <div className="stat-label">Transfer Speed</div>
-                        <div className="stat-value">{rxStats.speedKbs} KB/s</div>
-                      </div>
-                    </div>
+                    <TransferStatistics
+                      fileName={receivedMeta?.fileName ?? "Waiting for metadata"}
+                      fileSize={receivedMeta?.fileSize ?? 0}
+                      progress={receivedMeta ? (resolvedBlocksCount / receivedMeta.totalBlocks) * 100 : 0}
+                      decodedFrames={rxStats.decodedFrames}
+                      missedFrames={rxStats.missedFrames}
+                      duplicateFrames={rxStats.duplicateFrames}
+                      acceptedSymbols={rxStats.acceptedSymbols}
+                      cameraFps={rxStats.cameraFps}
+                      screenFps={0}
+                      throughputBytesPerSecond={rxStats.speedKbs * 1024}
+                      elapsedMs={receiverElapsedMs}
+                      remainingMs={receiverRemainingMs}
+                    />
+
+                    <OpticalSignalMetrics
+                      configuredBrightnessPercent={100}
+                      cameraFps={rxStats.cameraFps}
+                      screenFps={0}
+                    />
+
+                    <IntegrityResult result={integrityResult} />
+                    {receivedMediaMetadata && <MediaVerification metadata={receivedMediaMetadata} />}
 
                     {hashMatches === "matched" && (
                       <div className="hash-verified">
@@ -1289,7 +1419,7 @@ function App() {
             </div>
           </div>
           <div style={{ textAlign: "center", marginTop: "40px", color: "var(--text-muted)", fontSize: "13px" }}>
-            © {new Date().getFullYear()} Lumen Optical Systems Inc. All rights reserved. Zero-Trust Air-Gapped Transmission Engine.
+            © {new Date().getFullYear()} Lumen. Experimental browser-based optical communication research platform.
           </div>
         </div>
       </footer>

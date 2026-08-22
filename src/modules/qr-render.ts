@@ -1,4 +1,5 @@
 import QRCode from "qrcode";
+import type { OpticalRenderObservation } from "../core/transport";
 
 export interface QRCodeRenderOptions {
   ecc: "L" | "M" | "Q" | "H";
@@ -12,7 +13,8 @@ export async function renderQRToCanvas(
   canvas: HTMLCanvasElement,
   data: Uint8Array,
   options: QRCodeRenderOptions
-): Promise<void> {
+): Promise<OpticalRenderObservation> {
+  const startedAt = performance.now();
   const qrData = [{ data, mode: "byte" as const }];
   
   await QRCode.toCanvas(canvas, qrData, {
@@ -25,4 +27,10 @@ export async function renderQRToCanvas(
     },
     width: Math.min(canvas.parentElement?.clientWidth || 400, 500),
   });
+
+  return {
+    durationMs: performance.now() - startedAt,
+    completedAt: performance.now(),
+    payloadBytes: data.byteLength,
+  };
 }

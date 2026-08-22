@@ -1,4 +1,5 @@
 import { readBarcodes } from "zxing-wasm/reader";
+import type { OpticalDecodeObservation } from "../core/transport";
 
 export interface QRCodeScanResult {
   bytes: Uint8Array;
@@ -11,12 +12,20 @@ export interface QRCodeScanResult {
  */
 export async function scanQRCode(
   source: ImageData | HTMLCanvasElement
-): Promise<QRCodeScanResult | null> {
+): Promise<OpticalDecodeObservation & { result?: QRCodeScanResult }> {
+  const startedAt = performance.now();
   try {
     let imageData: ImageData;
     if (source instanceof HTMLCanvasElement) {
       const ctx = source.getContext("2d");
-      if (!ctx) return null;
+      if (!ctx) {
+        return {
+          outcome: "invalid",
+          durationMs: performance.now() - startedAt,
+          capturedAt: performance.now(),
+          error: "Canvas 2D context is unavailable",
+        };
+      }
       imageData = ctx.getImageData(0, 0, source.width, source.height);
     } else {
       imageData = source;
@@ -31,14 +40,31 @@ export async function scanQRCode(
     if (results && results.length > 0) {
       const firstResult = results[0];
       if (firstResult.bytes && firstResult.bytes.length > 0) {
-        return {
+        const result = {
           bytes: firstResult.bytes,
           text: firstResult.text || "",
+        };
+        return {
+          outcome: "decoded",
+          durationMs: performance.now() - startedAt,
+          capturedAt: performance.now(),
+          bytes: result.bytes,
+          result,
         };
       }
     }
   } catch (error) {
     console.warn("Decode failure:", error);
+    return {
+      outcome: "invalid",
+      durationMs: performance.now() - startedAt,
+      capturedAt: performance.now(),
+      error: error instanceof Error ? error.message : "Unknown QR decode error",
+    };
   }
-  return null;
+  return {
+    outcome: "no-signal",
+    durationMs: performance.now() - startedAt,
+    capturedAt: performance.now(),
+  };
 }
