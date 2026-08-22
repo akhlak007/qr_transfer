@@ -11,6 +11,10 @@ export interface IntegrityResult {
   bitPerfect: boolean;
 }
 
+export function isSha256Hex(value: string | null): value is string {
+  return value !== null && /^[0-9a-f]{64}$/.test(value);
+}
+
 export async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
   const source = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   return new Uint8Array(await crypto.subtle.digest("SHA-256", source));

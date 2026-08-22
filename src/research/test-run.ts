@@ -1,4 +1,4 @@
-import type { IntegrityStatus } from "../core/integrity";
+import { isSha256Hex, type IntegrityStatus } from "../core/integrity";
 import type { TransportId } from "../core/transport";
 
 export type EvidenceKind = "simulated" | "physical";
@@ -46,7 +46,15 @@ export interface TestRun {
 }
 
 export function isCanonicalSha256(value: string | null): value is string {
-  return value !== null && /^[0-9a-f]{64}$/.test(value);
+  return isSha256Hex(value);
+}
+
+function isFiniteNonNegative(value: number): boolean {
+  return Number.isFinite(value) && value >= 0;
+}
+
+function isRatio(value: number | null): boolean {
+  return value === null || (Number.isFinite(value) && value >= 0 && value <= 1);
 }
 
 function hasDeviceEvidence(device: TestDevice): boolean {
@@ -57,9 +65,16 @@ export function testRunValidationErrors(run: TestRun): string[] {
   const errors: string[] = [];
   if (run.status !== "complete") errors.push("Test run is still a draft");
   if (run.completedAt === null) errors.push("Completion time is required");
-  if (run.metrics.fileSize < 0) errors.push("File size cannot be negative");
-  if (run.metrics.elapsedMs <= 0) errors.push("Elapsed time must be measured");
-  if (run.metrics.averageThroughputBytesPerSecond < 0) errors.push("Throughput cannot be negative");
+  if (!Number.isSafeInteger(run.metrics.fileSize) || run.metrics.fileSize < 0) errors.push("File size must be a non-negative safe integer");
+  if (!Number.isFinite(run.metrics.elapsedMs) || run.metrics.elapsedMs <= 0) errors.push("Elapsed time must be a positive finite measurement");
+  if (!isFiniteNonNegative(run.metrics.averageThroughputBytesPerSecond)) errors.push("Throughput must be finite and non-negative");
+  if (!isRatio(run.metrics.frameHitRate)) errors.push("Frame hit rate must be between zero and one");
+  if (!isRatio(run.metrics.errorRate)) errors.push("Error rate must be between zero and one");
+  if (run.metrics.recoveryOverhead !== null && !isFiniteNonNegative(run.metrics.recoveryOverhead)) errors.push("Recovery overhead must be finite and non-negative");
+  if (run.metrics.cameraFps !== null && (!Number.isFinite(run.metrics.cameraFps) || run.metrics.cameraFps <= 0)) errors.push("Camera FPS must be positive and finite");
+  if (run.metrics.screenFps !== null && (!Number.isFinite(run.metrics.screenFps) || run.metrics.screenFps <= 0)) errors.push("Screen FPS must be positive and finite");
+  if (!isRatio(run.metrics.signalQuality)) errors.push("Signal quality must be between zero and one");
+  if (run.distanceCm !== null && !isFiniteNonNegative(run.distanceCm)) errors.push("Distance must be finite and non-negative");
 
   if (run.evidenceKind === "physical") {
     if (!hasDeviceEvidence(run.sender) || !hasDeviceEvidence(run.receiver)) errors.push("Physical runs require complete sender and receiver device evidence");

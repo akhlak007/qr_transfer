@@ -53,4 +53,7 @@ test("sender restart requires QR identity and exact re-selection", () => {
   assert.deepEqual(validateReselectedFile(sender, { name: "photo.png", size: 12, sha256Hex: "a".repeat(64) }), []);
   assert.equal(validateReselectedFile(sender, { name: "other.png", size: 12, sha256Hex: "b".repeat(64) }).length, 2);
   assert.throws(() => setResumeCapability(sender, "replay-receiver"), /Only receiver/);
+  const corruptSession = { ...sender, file: { ...sender.file, size: Number.POSITIVE_INFINITY, sha256Hex: "z".repeat(64) } };
+  assert.equal(canRestartSender(corruptSession), false);
+  assert.ok(validateReselectedFile(sender, { name: "photo.png", size: Number.NaN, sha256Hex: "z".repeat(64) }).length >= 2);
 });

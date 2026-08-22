@@ -52,3 +52,24 @@ test("rejects malformed or incomplete physical evidence from aggregates", () => 
   assert.equal(summary.sampleCount, 0);
   assert.equal(summary.maximumPhysicallyVerifiedFileSize, null);
 });
+
+test("rejects non-finite and out-of-domain measurements", () => {
+  const invalid = run({
+    evidenceKind: "physical",
+    distanceCm: Number.NaN,
+    environment: "normal",
+    metrics: {
+      ...run().metrics,
+      fileSize: Number.NaN,
+      elapsedMs: Number.POSITIVE_INFINITY,
+      averageThroughputBytesPerSecond: Number.POSITIVE_INFINITY,
+      frameHitRate: 2,
+      errorRate: -1,
+      cameraFps: -30,
+      screenFps: Number.POSITIVE_INFINITY,
+    },
+  });
+  const summary = summarizeRuns([invalid], TransportId.QR, "physical");
+  assert.equal(summary.sampleCount, 0);
+  assert.equal(summary.maximumPhysicallyVerifiedFileSize, null);
+});

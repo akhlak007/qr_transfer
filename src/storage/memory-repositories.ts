@@ -1,6 +1,7 @@
 import type { SessionCheckpoint, TransferSession } from "../core/transfer-session";
 import type { TestRun } from "../research/test-run";
 import { validateCompletedRun } from "../research/test-protocol";
+import { isSha256Hex } from "../core/integrity";
 import type {
   CheckpointRepository,
   ChunkRepository,
@@ -13,10 +14,6 @@ import type {
 
 function cloneBytes(bytes: Uint8Array): Uint8Array {
   return bytes.slice();
-}
-
-function isCanonicalSha256(value: string): boolean {
-  return /^[0-9a-f]{64}$/.test(value);
 }
 
 function validateSymbol(symbol: PersistedSymbol): void {
@@ -34,7 +31,7 @@ function validateChunk(chunk: PersistedChunk): void {
   if (!Number.isSafeInteger(chunk.chunkIndex) || chunk.chunkIndex < 0) throw new Error("Chunk index is invalid");
   if (!Number.isSafeInteger(chunk.blockSize) || chunk.blockSize <= 0 || chunk.bytes.byteLength !== chunk.blockSize) throw new Error("Chunk block size is invalid");
   if (!Number.isSafeInteger(chunk.logicalLength) || chunk.logicalLength < 0 || chunk.logicalLength > chunk.blockSize) throw new Error("Chunk logical length is invalid");
-  if (chunk.checksumHex !== null && !isCanonicalSha256(chunk.checksumHex)) throw new Error("Chunk checksum is invalid");
+  if (chunk.checksumHex !== null && !isSha256Hex(chunk.checksumHex)) throw new Error("Chunk checksum is invalid");
 }
 
 export class MemorySessionRepository implements SessionRepository {
