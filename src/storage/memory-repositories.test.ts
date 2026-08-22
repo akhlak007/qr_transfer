@@ -47,6 +47,7 @@ test("session repository returns defensive copies", async () => {
   const value: TransferSession = {
     schemaVersion: 1, transferId: "t", protocolVersion: 1, direction: "receive", transport: TransportId.QR,
     file: { name: "x", size: 1, mimeType: "application/octet-stream", sha256Hex: "a".repeat(64), mediaKind: "other" },
+    fileHashHex: "a".repeat(64),
     blockSize: 1, totalBlocks: 1, status: "recoverable", createdAt: 1, updatedAt: 2, completedAt: null,
     resumeCapability: "replay-receiver", encodingMode: "fountain", acceptedSymbols: 1, resolvedBlocks: 0,
     checkpointVersion: 1, failureCode: null, transportConfig: {},
@@ -55,4 +56,16 @@ test("session repository returns defensive copies", async () => {
   const restored = (await repository.get("t"))!;
   restored.file.name = "mutated";
   assert.equal((await repository.get("t"))!.file.name, "x");
+});
+
+test("memory sessions reject inconsistent flat hashes and recovery state", async () => {
+  const repository = new MemorySessionRepository();
+  const value: TransferSession = {
+    schemaVersion: 1, transferId: "bad", protocolVersion: 1, direction: "receive", transport: TransportId.QR,
+    file: { name: "x", size: 1, mimeType: "application/octet-stream", sha256Hex: "a".repeat(64), mediaKind: "other" },
+    fileHashHex: "b".repeat(64), blockSize: 1, totalBlocks: 1, status: "recoverable", createdAt: 1, updatedAt: 2, completedAt: null,
+    resumeCapability: "replay-receiver", encodingMode: "fountain", acceptedSymbols: 0, resolvedBlocks: 0,
+    checkpointVersion: 1, failureCode: null, transportConfig: {},
+  };
+  await assert.rejects(repository.put(value), /inconsistent/);
 });

@@ -4,7 +4,8 @@ import { IDBFactory } from "fake-indexeddb";
 import { TransportId } from "../core/transport";
 import type { SessionCheckpoint, TransferSession } from "../core/transfer-session";
 import type { TestRun } from "../research/test-run";
-import { deleteLumenDatabase, openLumenDatabase } from "./database";
+import { deleteLumenDatabase, openLumenDatabase, requestResult, transactionComplete } from "./database";
+import { IndexedDbResearchRepository } from "./indexeddb-research-repository";
 import { createPersistence } from "./persistence";
 import { detectStorageCapabilities } from "./storage-capabilities";
 import { LUMEN_DATABASE_VERSION, StoreName } from "./schema";
@@ -21,6 +22,7 @@ function session(transferId: string, updatedAt = 1): TransferSession {
     direction: "receive",
     transport: TransportId.QR,
     file: { name: "fixture.bin", size: 4, mimeType: "application/octet-stream", sha256Hex: "a".repeat(64), mediaKind: "other" },
+    fileHashHex: "a".repeat(64),
     blockSize: 4,
     totalBlocks: 1,
     status: "recoverable",
@@ -72,9 +74,38 @@ test("creates the version-one schema with documented stores and indexes", async 
 
   const transaction = database.transaction([StoreName.Sessions, StoreName.Symbols, StoreName.Chunks, StoreName.TestRuns], "readonly");
   assert.deepEqual([...transaction.objectStore(StoreName.Sessions).indexNames], ["by-direction", "by-file-hash", "by-status", "by-transport", "by-updated-at"]);
+  assert.equal(transaction.objectStore(StoreName.Sessions).index("by-file-hash").keyPath, "fileHashHex");
   assert.deepEqual([...transaction.objectStore(StoreName.Symbols).indexNames], ["by-transfer", "by-transfer-order"]);
   assert.deepEqual([...transaction.objectStore(StoreName.Chunks).indexNames], ["by-transfer"]);
   assert.deepEqual([...transaction.objectStore(StoreName.TestRuns).indexNames], ["by-completed-at", "by-device-direction", "by-evidence-kind", "by-integrity-status", "by-transport"]);
+  database.close();
+  await deleteLumenDatabase(factory, name);
+});
+
+test("rejects inconsistent recoverable sessions", async () => {
+  const factory = new IDBFactory();
+  const name = databaseName();
+  const persistence = await createPersistence({ factory, name });
+  const inconsistent = { ...session("broken"), acceptedSymbols: 0 };
+  await assert.rejects(persistence.sessions.put(inconsistent), /durable replay|inconsistent/);
+  persistence.close();
+  await deleteLumenDatabase(factory, name);
+});
+
+test("rejects unsupported research schemas on write and read", async () => {
+  const factory = new IDBFactory();
+  const name = databaseName();
+  const database = await openLumenDatabase({ factory, name });
+  const repository = new IndexedDbResearchRepository(database);
+  const unsupported = { ...simulatedRun("unsupported"), schemaVersion: 2 } as unknown as TestRun;
+  await assert.rejects(repository.put(unsupported), /Unsupported research schema/);
+
+  const transaction = database.transaction(StoreName.TestRuns, "readwrite");
+  const completion = transactionComplete(transaction);
+  await requestResult(transaction.objectStore(StoreName.TestRuns).put(unsupported));
+  await completion;
+  await assert.rejects(repository.get("unsupported"), /Unsupported research schema/);
+  await assert.rejects(repository.list(), /Unsupported research schema/);
   database.close();
   await deleteLumenDatabase(factory, name);
 });

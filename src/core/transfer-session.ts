@@ -28,6 +28,7 @@ export interface TransferSession {
   direction: TransferDirection;
   transport: TransportId;
   file: FileIdentity;
+  fileHashHex: string;
   blockSize: number;
   totalBlocks: number;
   status: TransferStatus;

@@ -13,6 +13,7 @@ function session(direction: "send" | "receive" = "send"): TransferSession {
     direction,
     transport: TransportId.QR,
     file: { name: "photo.png", size: 12, mimeType: "image/png", sha256Hex: "a".repeat(64), mediaKind: "image" },
+    fileHashHex: "a".repeat(64),
     blockSize: 4,
     totalBlocks: 3,
     status: "ready",

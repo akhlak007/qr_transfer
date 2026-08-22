@@ -1,7 +1,6 @@
 import type { SessionCheckpoint, TransferSession } from "../core/transfer-session";
 import type { TestRun } from "../research/test-run";
-import { validateCompletedRun } from "../research/test-protocol";
-import { validateCheckpointRecord, validateChunkRecord, validateSessionRecord, validateSymbolRecord } from "./record-validation";
+import { validateCheckpointRecord, validateChunkRecord, validateResearchRecord, validateSessionRecord, validateSymbolRecord } from "./record-validation";
 import type {
   CheckpointRepository,
   ChunkRepository,
@@ -60,15 +59,12 @@ export class MemoryCheckpointRepository implements CheckpointRepository {
 export class MemoryResearchRepository implements ResearchRepository {
   private readonly values = new Map<string, TestRun>();
   async put(value: TestRun) {
+    validateResearchRecord(value);
     const existing = this.values.get(value.runId);
     if (existing?.status === "complete") throw new Error("Completed research records are immutable");
-    if (value.status === "complete") {
-      const errors = validateCompletedRun(value);
-      if (errors.length > 0) throw new Error(`Completed research record is invalid: ${errors.join("; ")}`);
-    }
     this.values.set(value.runId, structuredClone(value));
   }
-  async get(id: string) { const value = this.values.get(id); return value ? structuredClone(value) : null; }
-  async list() { return [...this.values.values()].map((value) => structuredClone(value)).sort((a, b) => b.createdAt - a.createdAt); }
+  async get(id: string) { const value = this.values.get(id); if (value) validateResearchRecord(value); return value ? structuredClone(value) : null; }
+  async list() { const values = [...this.values.values()]; values.forEach(validateResearchRecord); return values.map((value) => structuredClone(value)).sort((a, b) => b.createdAt - a.createdAt); }
   async delete(id: string) { this.values.delete(id); }
 }

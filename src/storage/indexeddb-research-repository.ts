@@ -1,19 +1,16 @@
 import { requestResult, transactionComplete } from "./database";
-import { validateCompletedRun } from "../research/test-protocol";
 import type { TestRun } from "../research/test-run";
 import { deleteRecord, getRecord, listRecords } from "./indexeddb-helpers";
 import type { ResearchRepository } from "./repositories";
 import { StoreName } from "./schema";
+import { validateResearchRecord } from "./record-validation";
 
 export class IndexedDbResearchRepository implements ResearchRepository {
   private readonly database: IDBDatabase;
   constructor(database: IDBDatabase) { this.database = database; }
 
   async put(run: TestRun): Promise<void> {
-    if (run.status === "complete") {
-      const errors = validateCompletedRun(run);
-      if (errors.length > 0) throw new Error(`Completed research record is invalid: ${errors.join("; ")}`);
-    }
+    validateResearchRecord(run);
     const transaction = this.database.transaction(StoreName.TestRuns, "readwrite");
     const completion = transactionComplete(transaction);
     const store = transaction.objectStore(StoreName.TestRuns);
@@ -28,11 +25,14 @@ export class IndexedDbResearchRepository implements ResearchRepository {
   }
 
   async get(runId: string): Promise<TestRun | null> {
-    return getRecord<TestRun>(this.database, StoreName.TestRuns, runId);
+    const value = await getRecord<TestRun>(this.database, StoreName.TestRuns, runId);
+    if (value) validateResearchRecord(value);
+    return value;
   }
 
   async list(): Promise<TestRun[]> {
     const values = await listRecords<TestRun>(this.database, StoreName.TestRuns);
+    values.forEach(validateResearchRecord);
     return values.sort((left, right) => right.createdAt - left.createdAt);
   }
 

@@ -19,7 +19,7 @@ export function upgradeLumenSchema(database: IDBDatabase, oldVersion: number): v
   sessions.createIndex("by-direction", "direction");
   sessions.createIndex("by-updated-at", "updatedAt");
   sessions.createIndex("by-transport", "transport");
-  sessions.createIndex("by-file-hash", "file.sha256Hex");
+  sessions.createIndex("by-file-hash", "fileHashHex");
 
   const symbols = database.createObjectStore(StoreName.Symbols, { keyPath: ["transferId", "symbolKey"] });
   symbols.createIndex("by-transfer", "transferId");
