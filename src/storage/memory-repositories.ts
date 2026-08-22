@@ -1,7 +1,7 @@
 import type { SessionCheckpoint, TransferSession } from "../core/transfer-session";
 import type { TestRun } from "../research/test-run";
 import { validateCompletedRun } from "../research/test-protocol";
-import { isSha256Hex } from "../core/integrity";
+import { validateCheckpointRecord, validateChunkRecord, validateSessionRecord, validateSymbolRecord } from "./record-validation";
 import type {
   CheckpointRepository,
   ChunkRepository,
@@ -16,27 +16,9 @@ function cloneBytes(bytes: Uint8Array): Uint8Array {
   return bytes.slice();
 }
 
-function validateSymbol(symbol: PersistedSymbol): void {
-  if (symbol.schemaVersion !== 1) throw new Error("Unsupported symbol schema version");
-  if (!symbol.transferId || !symbol.symbolKey) throw new Error("Symbol identity is required");
-  if (!Number.isSafeInteger(symbol.seed) || symbol.seed < 0 || symbol.seed > 0xffffffff) throw new Error("Symbol seed is invalid");
-  if (!Number.isSafeInteger(symbol.degree) || symbol.degree <= 0 || symbol.degree > 0xffff) throw new Error("Symbol degree is invalid");
-  if (symbol.payload.byteLength === 0) throw new Error("Symbol payload is empty");
-  if (!Number.isSafeInteger(symbol.acceptedOrder) || symbol.acceptedOrder < 0) throw new Error("Symbol accepted order is invalid");
-}
-
-function validateChunk(chunk: PersistedChunk): void {
-  if (chunk.schemaVersion !== 1) throw new Error("Unsupported chunk schema version");
-  if (!chunk.transferId) throw new Error("Chunk transfer identity is required");
-  if (!Number.isSafeInteger(chunk.chunkIndex) || chunk.chunkIndex < 0) throw new Error("Chunk index is invalid");
-  if (!Number.isSafeInteger(chunk.blockSize) || chunk.blockSize <= 0 || chunk.bytes.byteLength !== chunk.blockSize) throw new Error("Chunk block size is invalid");
-  if (!Number.isSafeInteger(chunk.logicalLength) || chunk.logicalLength < 0 || chunk.logicalLength > chunk.blockSize) throw new Error("Chunk logical length is invalid");
-  if (chunk.checksumHex !== null && !isSha256Hex(chunk.checksumHex)) throw new Error("Chunk checksum is invalid");
-}
-
 export class MemorySessionRepository implements SessionRepository {
   private readonly values = new Map<string, TransferSession>();
-  async put(session: TransferSession) { this.values.set(session.transferId, structuredClone(session)); }
+  async put(session: TransferSession) { validateSessionRecord(session); this.values.set(session.transferId, structuredClone(session)); }
   async get(id: string) { const value = this.values.get(id); return value ? structuredClone(value) : null; }
   async list() { return [...this.values.values()].map((value) => structuredClone(value)).sort((a, b) => b.updatedAt - a.updatedAt); }
   async delete(id: string) { this.values.delete(id); }
@@ -46,7 +28,7 @@ export class MemorySymbolRepository implements SymbolRepository {
   private readonly values = new Map<string, PersistedSymbol>();
   private key(symbol: Pick<PersistedSymbol, "transferId" | "symbolKey">) { return `${symbol.transferId}\u0000${symbol.symbolKey}`; }
   async put(symbol: PersistedSymbol) {
-    validateSymbol(symbol);
+    validateSymbolRecord(symbol);
     const key = this.key(symbol);
     if (this.values.has(key)) return false;
     this.values.set(key, { ...symbol, payload: cloneBytes(symbol.payload) });
@@ -60,7 +42,7 @@ export class MemoryChunkRepository implements ChunkRepository {
   private readonly values = new Map<string, PersistedChunk>();
   private key(id: string, index: number) { return `${id}\u0000${index}`; }
   async put(chunk: PersistedChunk) {
-    validateChunk(chunk);
+    validateChunkRecord(chunk);
     this.values.set(this.key(chunk.transferId, chunk.chunkIndex), { ...chunk, bytes: cloneBytes(chunk.bytes) });
   }
   async get(id: string, index: number) { const value = this.values.get(this.key(id, index)); return value ? { ...value, bytes: cloneBytes(value.bytes) } : null; }
@@ -70,7 +52,7 @@ export class MemoryChunkRepository implements ChunkRepository {
 
 export class MemoryCheckpointRepository implements CheckpointRepository {
   private readonly values = new Map<string, SessionCheckpoint>();
-  async put(value: SessionCheckpoint) { this.values.set(value.transferId, structuredClone(value)); }
+  async put(value: SessionCheckpoint) { validateCheckpointRecord(value); this.values.set(value.transferId, structuredClone(value)); }
   async get(id: string) { const value = this.values.get(id); return value ? structuredClone(value) : null; }
   async delete(id: string) { this.values.delete(id); }
 }
