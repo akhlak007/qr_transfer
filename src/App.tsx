@@ -96,27 +96,33 @@ function App() {
   const fileHashRef = useRef<Uint8Array | null>(null);
   const chunksRef = useRef<Uint8Array[]>([]);
   const fountainEncoderRef = useRef<FountainEncoder | null>(null);
+  const filePreparationGenerationRef = useRef(0);
 
   // File and message loading
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const preparationGeneration = ++filePreparationGenerationRef.current;
     fileBytesRef.current = null;
     fileHashRef.current = null;
     chunksRef.current = [];
     fountainEncoderRef.current = null;
     setSendMediaMetadata(null);
     setSendFile(file);
-    setSendMediaMetadata(await extractMediaMetadata(file, file.name));
     setIsSending(false);
 
-    // Read file bytes
-    const arrayBuffer = await file.arrayBuffer();
+    const [mediaMetadata, arrayBuffer] = await Promise.all([
+      extractMediaMetadata(file, file.name),
+      file.arrayBuffer(),
+    ]);
+    if (preparationGeneration !== filePreparationGenerationRef.current) return;
+    setSendMediaMetadata(mediaMetadata);
     const bytes = new Uint8Array(arrayBuffer);
-    fileBytesRef.current = bytes;
 
     // Calculate SHA-256 hash using Web Crypto API (native platform feature)
     const hashBuffer = await crypto.subtle.digest("SHA-256", bytes.buffer as ArrayBuffer);
+    if (preparationGeneration !== filePreparationGenerationRef.current) return;
+    fileBytesRef.current = bytes;
     fileHashRef.current = new Uint8Array(hashBuffer);
 
     // Chunks
@@ -391,6 +397,7 @@ function App() {
   const totalDecodeTimeRef = useRef<number>(0);
   const rxSpeedIntervalRef = useRef<number | null>(null);
   const lastRecoveredBytesRef = useRef<number>(0);
+  const lastSpeedSampleAtRef = useRef<number | null>(null);
 
   // Start Camera
   const startCamera = async (resume: boolean = false) => {
@@ -469,9 +476,25 @@ function App() {
     rxStartedAtRef.current = null;
     rxCompletedAtRef.current = null;
     lastRecoveredBytesRef.current = 0;
+    lastSpeedSampleAtRef.current = null;
     scannedFramesCountRef.current = 0;
     capturedFramesCountRef.current = 0;
     totalDecodeTimeRef.current = 0;
+  };
+
+  const sampleReceiveSpeed = () => {
+    const meta = receivedMetaRef.current;
+    if (!meta) return;
+    const now = performance.now();
+    const sampleStartedAt = lastSpeedSampleAtRef.current ?? rxStartedAtRef.current ?? now;
+    const elapsedMs = Math.max(0, now - sampleStartedAt);
+    const resolvedNow = fountainDecoderRef.current?.getResolvedCount() ?? seqBlocksMapRef.current.size;
+    const recoveredNow = Math.min(meta.fileSize, resolvedNow * meta.blockSize);
+    const diffBytes = Math.max(0, recoveredNow - lastRecoveredBytesRef.current);
+    lastRecoveredBytesRef.current = recoveredNow;
+    lastSpeedSampleAtRef.current = now;
+    const speedKbs = elapsedMs > 0 ? (diffBytes / 1024) / (elapsedMs / 1000) : 0;
+    setRxStats((prev) => ({ ...prev, speedKbs }));
   };
 
   // Continuous QR Scanner Loop
@@ -499,16 +522,7 @@ function App() {
       }
 
       if (receivedMetaRef.current) {
-        // Calculate speed based on newly received unique frames/symbols
-        const resolvedNow = fountainDecoderRef.current?.getResolvedCount() ?? seqBlocksMapRef.current.size;
-        const recoveredNow = Math.min(receivedMetaRef.current.fileSize, resolvedNow * receivedMetaRef.current.blockSize);
-        const diffBytes = Math.max(0, recoveredNow - lastRecoveredBytesRef.current);
-        lastRecoveredBytesRef.current = recoveredNow;
-        const speed = diffBytes / 1024;
-        setRxStats((prev) => ({
-          ...prev,
-          speedKbs: speed,
-        }));
+        sampleReceiveSpeed();
       }
     }, 1000);
 
@@ -588,7 +602,10 @@ function App() {
           setReceivedMeta(meta);
           receivedMetaRef.current = meta;
           setScanStatus("receiving");
-          if (rxStartedAtRef.current === null) rxStartedAtRef.current = performance.now();
+          if (rxStartedAtRef.current === null) {
+            rxStartedAtRef.current = performance.now();
+            lastSpeedSampleAtRef.current = rxStartedAtRef.current;
+          }
 
           // Pre-initialize fountain decoder if needed
           if (!fountainDecoderRef.current) {
@@ -647,7 +664,10 @@ function App() {
           setReceivedMeta(placeholderMeta);
           receivedMetaRef.current = placeholderMeta;
           setScanStatus("receiving");
-          if (rxStartedAtRef.current === null) rxStartedAtRef.current = performance.now();
+          if (rxStartedAtRef.current === null) {
+            rxStartedAtRef.current = performance.now();
+            lastSpeedSampleAtRef.current = rxStartedAtRef.current;
+          }
         }
 
         const K = totalBlocks;
@@ -686,6 +706,7 @@ function App() {
   const finalizeSequentialTransfer = async () => {
     const meta = receivedMetaRef.current;
     if (!meta) return;
+    sampleReceiveSpeed();
     stopCamera();
     setScanStatus("success");
     rxCompletedAtRef.current = performance.now();
@@ -703,6 +724,7 @@ function App() {
   const finalizeFountainTransfer = async () => {
     const meta = receivedMetaRef.current;
     if (!meta || !fountainDecoderRef.current) return;
+    sampleReceiveSpeed();
     stopCamera();
     setScanStatus("success");
     rxCompletedAtRef.current = performance.now();
