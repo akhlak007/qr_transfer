@@ -8,17 +8,18 @@ interface TransferStatisticsProps {
   progress: number;
   decodedFrames: number;
   missedFrames: number;
+  invalidFrames: number;
   duplicateFrames: number;
   acceptedSymbols: number;
   cameraFps: number;
-  screenFps: number;
+  screenFps: number | null;
   throughputBytesPerSecond: number;
   elapsedMs: number;
   remainingMs: number | null;
 }
 
 export function TransferStatistics(props: TransferStatisticsProps) {
-  const attempts = props.decodedFrames + props.missedFrames;
+  const attempts = props.decodedFrames + props.missedFrames + props.invalidFrames;
   const hitRate = attempts > 0 ? props.decodedFrames / attempts : null;
   return (
     <section className="transfer-dashboard" aria-label="Transfer statistics">
@@ -33,9 +34,10 @@ export function TransferStatistics(props: TransferStatisticsProps) {
         <div className="stat-item"><div className="stat-label">Frame hit rate</div><div className="stat-value">{formatPercent(hitRate)}</div></div>
         <div className="stat-item"><div className="stat-label">QR frames decoded</div><div className="stat-value">{props.decodedFrames}</div></div>
         <div className="stat-item"><div className="stat-label">Camera decode misses</div><div className="stat-value">{props.missedFrames}</div></div>
+        <div className="stat-item"><div className="stat-label">Invalid decode attempts</div><div className="stat-value">{props.invalidFrames}</div></div>
         <div className="stat-item"><div className="stat-label">Duplicate / redundant</div><div className="stat-value">{props.duplicateFrames}</div></div>
         <div className="stat-item"><div className="stat-label">Accepted symbols</div><div className="stat-value">{props.acceptedSymbols}</div></div>
-        <div className="stat-item"><div className="stat-label">Camera / screen FPS</div><div className="stat-value">{props.cameraFps.toFixed(1)} / {props.screenFps.toFixed(1)}</div></div>
+        <div className="stat-item"><div className="stat-label">Camera / screen FPS</div><div className="stat-value">{props.cameraFps.toFixed(1)} / {props.screenFps === null ? "Unavailable" : props.screenFps.toFixed(1)}</div></div>
         <div className="stat-item"><div className="stat-label">Elapsed</div><div className="stat-value">{formatDuration(props.elapsedMs)}</div></div>
         <div className="stat-item"><div className="stat-label">Estimated remaining</div><div className="stat-value">{formatDuration(props.remainingMs)}</div></div>
       </div>

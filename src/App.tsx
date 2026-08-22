@@ -82,6 +82,7 @@ function App() {
     fountainSeed: 0,
     achievedFps: 0,
     averageRenderMs: 0,
+    renderFailures: 0,
   });
 
   const sendCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -90,6 +91,7 @@ function App() {
   const sendLoopGenerationRef = useRef(0);
   const senderFrameCounterRef = useRef(0);
   const senderSequenceIndexRef = useRef(0);
+  const successfulRenderCountRef = useRef(0);
   const fileBytesRef = useRef<Uint8Array | null>(null);
   const fileHashRef = useRef<Uint8Array | null>(null);
   const chunksRef = useRef<Uint8Array[]>([]);
@@ -99,6 +101,11 @@ function App() {
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    fileBytesRef.current = null;
+    fileHashRef.current = null;
+    chunksRef.current = [];
+    fountainEncoderRef.current = null;
+    setSendMediaMetadata(null);
     setSendFile(file);
     setSendMediaMetadata(await extractMediaMetadata(file, file.name));
     setIsSending(false);
@@ -124,9 +131,11 @@ function App() {
       fountainSeed: 0,
       achievedFps: 0,
       averageRenderMs: 0,
+      renderFailures: 0,
     });
     senderFrameCounterRef.current = 0;
     senderSequenceIndexRef.current = 0;
+    successfulRenderCountRef.current = 0;
   };
 
   const handleTextChange = async (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -157,9 +166,11 @@ function App() {
       fountainSeed: 0,
       achievedFps: 0,
       averageRenderMs: 0,
+      renderFailures: 0,
     });
     senderFrameCounterRef.current = 0;
     senderSequenceIndexRef.current = 0;
+    successfulRenderCountRef.current = 0;
   };
 
   // Adjust chunk list if block size changes
@@ -201,12 +212,14 @@ function App() {
     setIsSending(false);
     senderFrameCounterRef.current = 0;
     senderSequenceIndexRef.current = 0;
+    successfulRenderCountRef.current = 0;
     setSenderStats((prev) => ({
       ...prev,
       framesSent: 0,
       currentFrameIndex: 0,
       achievedFps: 0,
       averageRenderMs: 0,
+      renderFailures: 0,
     }));
 
     // Clear canvas
@@ -222,6 +235,7 @@ function App() {
     const generation = ++sendLoopGenerationRef.current;
 
     let frameCounter = senderFrameCounterRef.current;
+    let successfulRenders = successfulRenderCountRef.current;
     let seqIndex = senderSequenceIndexRef.current;
     let totalRenderMs = 0;
     let renderedThisRun = 0;
@@ -278,24 +292,31 @@ function App() {
       }
 
       // Render frame to canvas
+      let renderSucceeded = false;
       try {
         const observation = await renderQRToCanvas(canvas, frameData, { ecc: qrEcc, version: qrVersion });
         totalRenderMs += observation.durationMs;
+        renderSucceeded = true;
       } catch (err) {
         console.error("QR Code rendering failed (data size might exceed QR version capacity):", err);
+        setSenderStats((prev) => ({ ...prev, renderFailures: prev.renderFailures + 1 }));
       }
 
       if (!isSendingRef.current || generation !== sendLoopGenerationRef.current) return;
 
       frameCounter++;
-      renderedThisRun++;
       senderFrameCounterRef.current = frameCounter;
+      if (renderSucceeded) {
+        renderedThisRun++;
+        successfulRenders++;
+        successfulRenderCountRef.current = successfulRenders;
+      }
       const elapsedMs = Math.max(1, performance.now() - loopStartedAt);
       setSenderStats((prev) => ({
         ...prev,
-        framesSent: frameCounter,
+        framesSent: successfulRenders,
         achievedFps: (renderedThisRun * 1000) / elapsedMs,
-        averageRenderMs: totalRenderMs / renderedThisRun,
+        averageRenderMs: renderedThisRun > 0 ? totalRenderMs / renderedThisRun : 0,
       }));
 
       const renderElapsedMs = performance.now() - tickStartedAt;
@@ -369,7 +390,7 @@ function App() {
   const capturedFramesCountRef = useRef<number>(0);
   const totalDecodeTimeRef = useRef<number>(0);
   const rxSpeedIntervalRef = useRef<number | null>(null);
-  const lastResolvedCountRef = useRef<number>(0);
+  const lastRecoveredBytesRef = useRef<number>(0);
 
   // Start Camera
   const startCamera = async (resume: boolean = false) => {
@@ -447,7 +468,7 @@ function App() {
     setIntegrityResult({ status: "waiting", bitPerfect: false });
     rxStartedAtRef.current = null;
     rxCompletedAtRef.current = null;
-    lastResolvedCountRef.current = 0;
+    lastRecoveredBytesRef.current = 0;
     scannedFramesCountRef.current = 0;
     capturedFramesCountRef.current = 0;
     totalDecodeTimeRef.current = 0;
@@ -480,12 +501,13 @@ function App() {
       if (receivedMetaRef.current) {
         // Calculate speed based on newly received unique frames/symbols
         const resolvedNow = fountainDecoderRef.current?.getResolvedCount() ?? seqBlocksMapRef.current.size;
-        const diff = Math.max(0, resolvedNow - lastResolvedCountRef.current);
-        lastResolvedCountRef.current = resolvedNow;
-        const speed = (diff * receivedMetaRef.current.blockSize) / 1024;
+        const recoveredNow = Math.min(receivedMetaRef.current.fileSize, resolvedNow * receivedMetaRef.current.blockSize);
+        const diffBytes = Math.max(0, recoveredNow - lastRecoveredBytesRef.current);
+        lastRecoveredBytesRef.current = recoveredNow;
+        const speed = diffBytes / 1024;
         setRxStats((prev) => ({
           ...prev,
-          speedKbs: Math.round(speed),
+          speedKbs: speed,
         }));
       }
     }, 1000);
@@ -1331,10 +1353,11 @@ function App() {
                       progress={receivedMeta ? (resolvedBlocksCount / receivedMeta.totalBlocks) * 100 : 0}
                       decodedFrames={rxStats.decodedFrames}
                       missedFrames={rxStats.missedFrames}
+                      invalidFrames={rxStats.invalidFrames}
                       duplicateFrames={rxStats.duplicateFrames}
                       acceptedSymbols={rxStats.acceptedSymbols}
                       cameraFps={rxStats.cameraFps}
-                      screenFps={0}
+                      screenFps={null}
                       throughputBytesPerSecond={rxStats.speedKbs * 1024}
                       elapsedMs={receiverElapsedMs}
                       remainingMs={receiverRemainingMs}
@@ -1343,7 +1366,7 @@ function App() {
                     <OpticalSignalMetrics
                       configuredBrightnessPercent={100}
                       cameraFps={rxStats.cameraFps}
-                      screenFps={0}
+                      screenFps={null}
                     />
 
                     <IntegrityResult result={integrityResult} />

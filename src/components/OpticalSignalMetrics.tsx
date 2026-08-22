@@ -1,7 +1,7 @@
 interface OpticalSignalMetricsProps {
   configuredBrightnessPercent: number;
   cameraFps: number;
-  screenFps: number;
+  screenFps: number | null;
   ambientLightEstimate?: string;
   signalQuality?: string;
 }
@@ -19,7 +19,7 @@ export function OpticalSignalMetrics({
       <div className="signal-grid">
         <div><span>Canvas brightness</span><strong>{configuredBrightnessPercent}%</strong></div>
         <div><span>Camera FPS</span><strong>{cameraFps.toFixed(1)}</strong></div>
-        <div><span>Screen FPS</span><strong>{screenFps.toFixed(1)}</strong></div>
+        <div><span>Screen FPS</span><strong>{screenFps === null ? "Unavailable at receiver" : screenFps.toFixed(1)}</strong></div>
         <div><span>Ambient light</span><strong>{ambientLightEstimate}</strong></div>
         <div><span>Signal quality</span><strong>{signalQuality}</strong></div>
       </div>

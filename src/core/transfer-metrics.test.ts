@@ -21,7 +21,7 @@ test("calculates explicitly defined receive metrics", () => {
       now: 3_000,
       lastSampleAt: 2_000,
       lastSampleBytes: 40_000,
-      lastSampleDecodedFrames: 50,
+      lastSampleCapturedFrames: 80,
     },
     100_000,
     50,
@@ -33,7 +33,7 @@ test("calculates explicitly defined receive metrics", () => {
   assert.ok(result.missRate !== null && Math.abs(result.missRate - 0.2) < Number.EPSILON);
   assert.equal(result.averageThroughputBytesPerSecond, 30_000);
   assert.equal(result.currentThroughputBytesPerSecond, 20_000);
-  assert.equal(result.cameraFps, 30);
+  assert.equal(result.cameraFps, 40);
   assert.equal(result.achievedScreenFps, 25);
   assert.equal(result.recoveryOverhead, 0.4);
   assert.equal(result.estimatedRemainingMs, 2_000);
@@ -48,7 +48,7 @@ test("does not invent rates before observations exist", () => {
       now: 500,
       lastSampleAt: null,
       lastSampleBytes: 0,
-      lastSampleDecodedFrames: 0,
+      lastSampleCapturedFrames: 0,
     },
     1_000,
     2,

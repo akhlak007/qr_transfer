@@ -16,7 +16,7 @@ export interface TransferTiming {
   now: number;
   lastSampleAt: number | null;
   lastSampleBytes: number;
-  lastSampleDecodedFrames: number;
+  lastSampleCapturedFrames: number;
 }
 
 export interface TransferMetricSnapshot extends TransferCounters {
@@ -63,9 +63,9 @@ export function calculateTransferMetrics(
 
   const sampleElapsedMs = timing.lastSampleAt === null ? 0 : Math.max(0, timing.now - timing.lastSampleAt);
   const sampleBytes = Math.max(0, counters.recoveredBytes - timing.lastSampleBytes);
-  const sampleDecodedFrames = Math.max(0, counters.decodedFrames - timing.lastSampleDecodedFrames);
+  const sampleCapturedFrames = Math.max(0, counters.cameraFramesCaptured - timing.lastSampleCapturedFrames);
   const currentThroughputBytesPerSecond = safeRate(sampleBytes * 1000, sampleElapsedMs);
-  const cameraFps = safeRate(sampleDecodedFrames * 1000, sampleElapsedMs);
+  const cameraFps = safeRate(sampleCapturedFrames * 1000, sampleElapsedMs);
   const achievedScreenFps = safeRate(counters.renderedFrames * 1000, elapsedMs);
 
   const recoveryOverhead = totalBlocks > 0 && counters.acceptedSymbols > 0
