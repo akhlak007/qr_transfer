@@ -149,3 +149,31 @@ export function bytesToHex(bytes: Uint8Array): string {
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
+
+/**
+ * Derives a stable legacy session identifier from received QR metadata.
+ * SHA-256("legacy-qr" || fileHash || fileSize || blockSize || totalBlocks || fileName)
+ */
+export async function deriveLegacySessionId(metadata: FileMetadata): Promise<string> {
+  const encoder = new TextEncoder();
+  const prefix = encoder.encode("legacy-qr");
+  const nameBytes = encoder.encode(metadata.fileName);
+  const sizeBytes = new Uint8Array(12);
+  const view = new DataView(sizeBytes.buffer);
+  view.setUint32(0, metadata.fileSize);
+  view.setUint32(4, metadata.blockSize);
+  view.setUint32(8, metadata.totalBlocks);
+
+  const combined = new Uint8Array(prefix.length + metadata.fileHash.length + sizeBytes.length + nameBytes.length);
+  let offset = 0;
+  combined.set(prefix, offset);
+  offset += prefix.length;
+  combined.set(metadata.fileHash, offset);
+  offset += metadata.fileHash.length;
+  combined.set(sizeBytes, offset);
+  offset += sizeBytes.length;
+  combined.set(nameBytes, offset);
+
+  const hashBuffer = await crypto.subtle.digest("SHA-256", combined.buffer as ArrayBuffer);
+  return bytesToHex(new Uint8Array(hashBuffer));
+}

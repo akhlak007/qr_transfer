@@ -279,6 +279,21 @@ export class FountainDecoder {
   }
 
   /**
+   * Returns an array of block indices that are currently resolved.
+   */
+  public getResolvedIndices(): number[] {
+    return Array.from(this.resolvedBlocks.keys()).sort((a, b) => a - b);
+  }
+
+  /**
+   * Returns a resolved block by index, or undefined if not yet resolved.
+   */
+  public getResolvedBlock(index: number): Uint8Array | undefined {
+    const block = this.resolvedBlocks.get(index);
+    return block ? new Uint8Array(block) : undefined;
+  }
+
+  /**
    * Returns all resolved blocks in a sorted array.
    * Throws an error if the decoder is not done.
    */

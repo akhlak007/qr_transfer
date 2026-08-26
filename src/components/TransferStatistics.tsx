@@ -16,6 +16,8 @@ interface TransferStatisticsProps {
   throughputBytesPerSecond: number;
   elapsedMs: number;
   remainingMs: number | null;
+  persistenceStatus?: "idle" | "saving" | "saved" | "error" | null;
+  durableCheckpoints?: number;
 }
 
 export function TransferStatistics(props: TransferStatisticsProps) {
@@ -40,6 +42,9 @@ export function TransferStatistics(props: TransferStatisticsProps) {
         <div className="stat-item"><div className="stat-label">Camera / screen FPS</div><div className="stat-value">{props.cameraFps.toFixed(1)} / {props.screenFps === null ? "Unavailable" : props.screenFps.toFixed(1)}</div></div>
         <div className="stat-item"><div className="stat-label">Elapsed</div><div className="stat-value">{formatDuration(props.elapsedMs)}</div></div>
         <div className="stat-item"><div className="stat-label">Estimated remaining</div><div className="stat-value">{formatDuration(props.remainingMs)}</div></div>
+        {props.durableCheckpoints !== undefined && (
+          <div className="stat-item"><div className="stat-label">Durable Checkpoints</div><div className="stat-value">{props.durableCheckpoints}</div></div>
+        )}
       </div>
       <p className="metric-note">Camera misses are decode attempts without a QR result. Transmitter packet loss is unavailable until sequence-bearing frames are introduced.</p>
     </section>

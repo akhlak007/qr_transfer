@@ -12,8 +12,6 @@ import {
   decodeFountainFrame,
 } from "./modules/protocol";
 import type { FileMetadata } from "./modules/protocol";
-import { renderQRToCanvas } from "./modules/qr-render";
-import { scanQRCode } from "./modules/qr-scan";
 import { prepareZXingModule } from "zxing-wasm/reader";
 import { sha256, createIntegrityResult } from "./core/integrity";
 import type { IntegrityResult as IntegrityResultModel } from "./core/integrity";
@@ -24,7 +22,34 @@ import { OpticalSignalMetrics } from "./components/OpticalSignalMetrics";
 import { IntegrityResult } from "./components/IntegrityResult";
 import { MediaVerification } from "./components/MediaVerification";
 import { ModeBadge } from "./components/ModeBadge";
+import { StorageStatus } from "./components/StorageStatus";
+import { RecoveryModal } from "./components/RecoveryModal";
+import { ResearchDashboard } from "./components/ResearchDashboard";
+import { VlcWaveformInspector } from "./components/VlcWaveformInspector";
 import { TransportId } from "./core/transport";
+import { bytesToHex, deriveLegacySessionId } from "./modules/protocol";
+import { createPersistence, type PersistenceRepositories } from "./storage/persistence";
+import { detectStorageCapabilities, type StorageCapabilities } from "./storage/storage-capabilities";
+import { PersistenceQueue, type PersistenceQueueStatus } from "./storage/persistence-queue";
+import { createTransferId, type TransferSession } from "./core/transfer-session";
+import { transitionSession, setResumeCapability } from "./core/session-controller";
+import { type ReplayResult } from "./storage/recovery-manager";
+import type { VlcModulationScheme } from "./transports/vlc/vlc-framing";
+import { OpticalCalibrationEngine, type CalibrationResult } from "./transports/vlc/vlc-calibration";
+import { OfdmSpectrumInspector } from "./components/OfdmSpectrumInspector";
+import type { OfdmModulationScheme } from "./transports/ofdm/ofdm-framing";
+import { createSubcarrierMap } from "./transports/ofdm/ofdm-framing";
+import { RendererRegistry } from "./transports/rendering/renderer-registry";
+import type { RendererDiagnostics } from "./transports/rendering/optical-renderer";
+import { QRTransmitterRenderer } from "./transports/qr/qr-transmitter-renderer";
+import { VlcTransmitterRenderer } from "./transports/vlc/vlc-transmitter-renderer";
+import { VisualOfdmTransmitterRenderer } from "./transports/ofdm/visual-ofdm-transmitter-renderer";
+import { ProtocolRendererDiagnostics } from "./components/ProtocolRendererDiagnostics";
+import { LiveReceiverRouter, OpticalFrameScheduler } from "./core/application-optical-pipeline";
+import { ApplicationReconstructionService, type ReconstructionResult } from "./core/application-reconstruction-service";
+import { CameraLifecycleController } from "./core/camera-lifecycle-controller";
+import { FinalizationGenerationGuard } from "./core/finalization-generation-guard";
+import { ReceiverSessionController } from "./core/receiver-session-controller";
 
 
 const PlayIcon = () => (
@@ -55,6 +80,98 @@ const DownloadIcon = () => (
 function App() {
   const [activeTab, setActiveTab] = useState<"send" | "receive">("send");
   const [zxingReady, setZxingReady] = useState(false);
+
+  // Persistence and Storage State
+  const [persistence, setPersistence] = useState<PersistenceRepositories | null>(null);
+  const [storageCaps, setStorageCaps] = useState<StorageCapabilities | null>(null);
+  const [queueStatus, setQueueStatus] = useState<PersistenceQueueStatus>("idle");
+  const [persistenceError, setPersistenceError] = useState<string | null>(null);
+  const [durableCheckpointsCount, setDurableCheckpointsCount] = useState<number>(0);
+  const [persistedSymbolsCount, setPersistedSymbolsCount] = useState<number>(0);
+  const [isRecoveryOpen, setIsRecoveryOpen] = useState(false);
+  const [savedSessionsCount, setSavedSessionsCount] = useState<number>(0);
+  const [selectedTransport, setSelectedTransport] = useState<TransportId>(TransportId.QR);
+  const [vlcModulation, setVlcModulation] = useState<VlcModulationScheme>("ook");
+  const [vlcCalibration] = useState<CalibrationResult | null>(() => {
+    const engine = new OpticalCalibrationEngine();
+    return engine.calibrate(255, 0, 10);
+  });
+  const [ofdmModulation, setOfdmModulation] = useState<OfdmModulationScheme>("bpsk");
+  const [ofdmGridSize, setOfdmGridSize] = useState<number>(16);
+  const ofdmSubcarrierMap = createSubcarrierMap(ofdmGridSize);
+  const [rendererDiagnostics, setRendererDiagnostics] = useState<RendererDiagnostics | null>(null);
+  const rendererRegistryRef = useRef<RendererRegistry | null>(null);
+  if (!rendererRegistryRef.current) {
+    rendererRegistryRef.current = new RendererRegistry()
+      .register(new QRTransmitterRenderer())
+      .register(new VlcTransmitterRenderer())
+      .register(new VisualOfdmTransmitterRenderer());
+  }
+
+  const persistenceRef = useRef<PersistenceRepositories | null>(null);
+  const persistenceQueueRef = useRef<PersistenceQueue | null>(null);
+  const currentTransferIdRef = useRef<string | null>(null);
+  const currentSessionRef = useRef<TransferSession | null>(null);
+  const currentSenderSessionRef = useRef<TransferSession | null>(null);
+  const persistedResolvedIndicesRef = useRef<Set<number>>(new Set());
+
+  const refreshSavedSessionsCount = useCallback(async () => {
+    if (!persistenceRef.current) return;
+    try {
+      const list = await persistenceRef.current.sessions.list();
+      setSavedSessionsCount(list.length);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Initialize persistence and capabilities on mount
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const caps = await detectStorageCapabilities();
+        if (active) setStorageCaps(caps);
+      } catch (err) {
+        console.warn("Storage capabilities detection failed:", err);
+      }
+
+      try {
+        const repo = await createPersistence();
+        if (active) {
+          setPersistence(repo);
+          persistenceRef.current = repo;
+          try {
+            const list = await repo.sessions.list();
+            if (active) setSavedSessionsCount(list.length);
+          } catch {
+            // ignore
+          }
+        }
+      } catch (err) {
+        console.warn("Persistence creation failed:", err);
+      }
+    })();
+
+    const handleVisibilityOrUnload = () => {
+      if (persistenceQueueRef.current) {
+        void persistenceQueueRef.current.flush();
+      }
+    };
+    window.addEventListener("visibilitychange", handleVisibilityOrUnload);
+    window.addEventListener("pagehide", handleVisibilityOrUnload);
+    window.addEventListener("beforeunload", handleVisibilityOrUnload);
+
+    return () => {
+      active = false;
+      window.removeEventListener("visibilitychange", handleVisibilityOrUnload);
+      window.removeEventListener("pagehide", handleVisibilityOrUnload);
+      window.removeEventListener("beforeunload", handleVisibilityOrUnload);
+      if (persistenceQueueRef.current) {
+        persistenceQueueRef.current.destroy();
+      }
+    };
+  }, []);
 
   // Pre-load WASM on start
   useEffect(() => {
@@ -92,11 +209,34 @@ function App() {
   const senderFrameCounterRef = useRef(0);
   const senderSequenceIndexRef = useRef(0);
   const successfulRenderCountRef = useRef(0);
+  const opticalSchedulerRef = useRef<OpticalFrameScheduler | null>(null);
+  const liveReceiverRouterRef = useRef<LiveReceiverRouter | null>(null);
+  const receiverSessionControllerRef = useRef<ReceiverSessionController | null>(null);
+  const cameraLifecycleRef = useRef<CameraLifecycleController | null>(null);
+  const reconstructionServiceRef = useRef(new ApplicationReconstructionService());
+  const applicationFinalizationRef = useRef<Promise<void> | null>(null);
+  const finalizationGenerationGuardRef = useRef(new FinalizationGenerationGuard());
+  const resetReceiverStateRef = useRef<() => void>(() => undefined);
   const fileBytesRef = useRef<Uint8Array | null>(null);
   const fileHashRef = useRef<Uint8Array | null>(null);
   const chunksRef = useRef<Uint8Array[]>([]);
   const fountainEncoderRef = useRef<FountainEncoder | null>(null);
   const filePreparationGenerationRef = useRef(0);
+
+  useEffect(() => {
+    const next = {
+      transport: selectedTransport,
+      vlcModulation,
+      ofdmModulation,
+      ofdmGridSize: ofdmGridSize as 8 | 16 | 32,
+    };
+    if (!receiverSessionControllerRef.current) {
+      receiverSessionControllerRef.current = new ReceiverSessionController(next, () => resetReceiverStateRef.current());
+    } else {
+      receiverSessionControllerRef.current.changeConfiguration(next);
+    }
+    opticalSchedulerRef.current = null;
+  }, [selectedTransport, ofdmModulation, ofdmGridSize, vlcModulation]);
 
   // File and message loading
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -130,6 +270,43 @@ function App() {
     chunksRef.current = blocks;
     fountainEncoderRef.current = new FountainEncoder(blocks, blockSize);
 
+    const hexHash = bytesToHex(new Uint8Array(hashBuffer));
+    const transferId = createTransferId();
+    const senderSession: TransferSession = {
+      schemaVersion: 1,
+      transferId,
+      protocolVersion: 1,
+      direction: "send",
+      transport: selectedTransport,
+      file: {
+        name: file.name,
+        size: bytes.length,
+        mimeType: file.type || "application/octet-stream",
+        sha256Hex: hexHash,
+        mediaKind: mediaMetadata?.kind ?? "other",
+      },
+      fileHashHex: hexHash,
+      blockSize,
+      totalBlocks: blocks.length,
+      status: "ready",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      completedAt: null,
+      resumeCapability: "restart-sender",
+      encodingMode: sendMode,
+      acceptedSymbols: 0,
+      resolvedBlocks: 0,
+      checkpointVersion: 1,
+      failureCode: null,
+      transportConfig: { fps, qrEcc, qrVersion },
+    };
+    currentSenderSessionRef.current = senderSession;
+    if (persistenceRef.current) {
+      void persistenceRef.current.sessions.put(senderSession).catch((err) => {
+        console.warn("Could not persist sender session:", err);
+      });
+    }
+
     setSenderStats({
       totalBlocks: blocks.length,
       framesSent: 0,
@@ -141,6 +318,7 @@ function App() {
     });
     senderFrameCounterRef.current = 0;
     senderSequenceIndexRef.current = 0;
+    opticalSchedulerRef.current = null;
     successfulRenderCountRef.current = 0;
   };
 
@@ -165,6 +343,43 @@ function App() {
     chunksRef.current = blocks;
     fountainEncoderRef.current = new FountainEncoder(blocks, blockSize);
 
+    const hexHash = bytesToHex(new Uint8Array(hashBuffer));
+    const transferId = createTransferId();
+    const senderSession: TransferSession = {
+      schemaVersion: 1,
+      transferId,
+      protocolVersion: 1,
+      direction: "send",
+      transport: selectedTransport,
+      file: {
+        name: "message",
+        size: bytes.length,
+        mimeType: "text/plain",
+        sha256Hex: hexHash,
+        mediaKind: "other",
+      },
+      fileHashHex: hexHash,
+      blockSize,
+      totalBlocks: blocks.length,
+      status: "ready",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      completedAt: null,
+      resumeCapability: "restart-sender",
+      encodingMode: sendMode,
+      acceptedSymbols: 0,
+      resolvedBlocks: 0,
+      checkpointVersion: 1,
+      failureCode: null,
+      transportConfig: { fps, qrEcc, qrVersion },
+    };
+    currentSenderSessionRef.current = senderSession;
+    if (persistenceRef.current) {
+      void persistenceRef.current.sessions.put(senderSession).catch((err) => {
+        console.warn("Could not persist sender message session:", err);
+      });
+    }
+
     setSenderStats({
       totalBlocks: blocks.length,
       framesSent: 0,
@@ -176,6 +391,7 @@ function App() {
     });
     senderFrameCounterRef.current = 0;
     senderSequenceIndexRef.current = 0;
+    opticalSchedulerRef.current = null;
     successfulRenderCountRef.current = 0;
   };
 
@@ -204,10 +420,32 @@ function App() {
       sendLoopGenerationRef.current++;
       if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
       setIsSending(false);
+      if (currentSenderSessionRef.current && currentSenderSessionRef.current.status === "active") {
+        try {
+          const paused = transitionSession(currentSenderSessionRef.current, "paused");
+          currentSenderSessionRef.current = paused;
+          if (persistenceRef.current) {
+            void persistenceRef.current.sessions.put(paused).catch((err) => console.warn(err));
+          }
+        } catch (err) {
+          console.warn("Sender transition warning:", err);
+        }
+      }
     } else {
       // Start
       isSendingRef.current = true;
       setIsSending(true);
+      if (currentSenderSessionRef.current && currentSenderSessionRef.current.status !== "active") {
+        try {
+          const activeSession = transitionSession(currentSenderSessionRef.current, "active");
+          currentSenderSessionRef.current = activeSession;
+          if (persistenceRef.current) {
+            void persistenceRef.current.sessions.put(activeSession).catch((err) => console.warn(err));
+          }
+        } catch (err) {
+          console.warn("Sender transition warning:", err);
+        }
+      }
     }
   };
 
@@ -216,6 +454,17 @@ function App() {
     sendLoopGenerationRef.current++;
     if (sendTimerRef.current) clearTimeout(sendTimerRef.current);
     setIsSending(false);
+    if (currentSenderSessionRef.current && currentSenderSessionRef.current.status !== "ready") {
+      try {
+        const readySession = transitionSession(currentSenderSessionRef.current, "ready");
+        currentSenderSessionRef.current = readySession;
+        if (persistenceRef.current) {
+          void persistenceRef.current.sessions.put(readySession).catch((err) => console.warn(err));
+        }
+      } catch (err) {
+        console.warn("Sender stop transition warning:", err);
+      }
+    }
     senderFrameCounterRef.current = 0;
     senderSequenceIndexRef.current = 0;
     successfulRenderCountRef.current = 0;
@@ -257,6 +506,13 @@ function App() {
     };
 
     const intervalMs = 1000 / fps;
+    const scheduler = opticalSchedulerRef.current ?? new OpticalFrameScheduler({
+      transport: selectedTransport,
+      vlcModulation,
+      ofdmModulation,
+      ofdmGridSize: ofdmGridSize as 8 | 16 | 32,
+    });
+    opticalSchedulerRef.current = scheduler;
 
     const renderNextFrame = async () => {
       if (!isSendingRef.current || generation !== sendLoopGenerationRef.current) return;
@@ -264,16 +520,16 @@ function App() {
       const canvas = sendCanvasRef.current;
       if (!canvas) return;
 
-      let frameData: Uint8Array;
+      if (!scheduler.hasActiveFrame()) {
+        let nextFrameData: Uint8Array;
 
-      // Every 15th frame, send the metadata header so the receiver can catch up
-      if (frameCounter % 15 === 0) {
-        frameData = encodeMetadataFrame(metadata);
-      } else {
-        if (sendMode === "sequential") {
+        // Every 15th application frame, send metadata so the receiver can catch up.
+        if (frameCounter % 15 === 0) {
+          nextFrameData = encodeMetadataFrame(metadata);
+        } else if (sendMode === "sequential") {
           // Sequential mode
           const block = chunksRef.current[seqIndex];
-          frameData = encodeSequentialFrame(seqIndex, block);
+          nextFrameData = encodeSequentialFrame(seqIndex, block);
 
           setSenderStats((prev) => ({
             ...prev,
@@ -288,31 +544,46 @@ function App() {
             fountainEncoderRef.current = new FountainEncoder(chunksRef.current, blockSize);
           }
           const symbol = fountainEncoderRef.current.generateSymbol();
-          frameData = encodeFountainFrame(symbol, chunksRef.current.length);
+          nextFrameData = encodeFountainFrame(symbol, chunksRef.current.length);
 
           setSenderStats((prev) => ({
             ...prev,
             fountainSeed: symbol.seed,
           }));
         }
+        scheduler.beginFrame(nextFrameData);
       }
+      const frameData = scheduler.getActiveBytes();
 
       // Render frame to canvas
       let renderSucceeded = false;
       try {
-        const observation = await renderQRToCanvas(canvas, frameData, { ecc: qrEcc, version: qrVersion });
-        totalRenderMs += observation.durationMs;
+        const result = await rendererRegistryRef.current!.render(selectedTransport, canvas, frameData, {
+          transport: selectedTransport,
+          vlcModulation,
+          ofdmModulation,
+          ofdmGridSize,
+          qrEcc,
+          qrVersion,
+          symbolRate: fps,
+          frameSequence: frameCounter,
+          opticalUnitIndex: scheduler.getOpticalUnitIndex(),
+        });
+        totalRenderMs += result.durationMs;
+        setRendererDiagnostics(result.diagnostics);
         renderSucceeded = true;
       } catch (err) {
-        console.error("QR Code rendering failed (data size might exceed QR version capacity):", err);
+        console.error("Optical rendering failed:", err);
         setSenderStats((prev) => ({ ...prev, renderFailures: prev.renderFailures + 1 }));
       }
 
       if (!isSendingRef.current || generation !== sendLoopGenerationRef.current) return;
 
-      frameCounter++;
-      senderFrameCounterRef.current = frameCounter;
       if (renderSucceeded) {
+        if (scheduler.markRendered()) {
+          frameCounter++;
+          senderFrameCounterRef.current = frameCounter;
+        }
         renderedThisRun++;
         successfulRenders++;
         successfulRenderCountRef.current = successfulRenders;
@@ -330,7 +601,7 @@ function App() {
     };
 
     void renderNextFrame();
-  }, [blockSize, fps, qrEcc, qrVersion, sendFile, sendMode, transferType]);
+  }, [blockSize, fps, ofdmGridSize, ofdmModulation, qrEcc, qrVersion, selectedTransport, sendFile, sendMode, transferType, vlcModulation]);
 
   // Re-adjust interval if FPS changes during transmission
   useEffect(() => {
@@ -354,6 +625,7 @@ function App() {
 
   // --- RECEIVER STATE ---
   const [isCameraActive, setIsCameraActive] = useState(false);
+  const [isReceiverFinalizing, setIsReceiverFinalizing] = useState(false);
   const [scanStatus, setScanStatus] = useState<"idle" | "listening" | "receiving" | "success" | "failed" | "reconnecting">("idle");
   const [receivedMeta, setReceivedMeta] = useState<FileMetadata | null>(null);
   const receivedMetaRef = useRef<FileMetadata | null>(null);
@@ -399,6 +671,24 @@ function App() {
   const lastRecoveredBytesRef = useRef<number>(0);
   const lastSpeedSampleAtRef = useRef<number | null>(null);
 
+  const getCameraLifecycle = () => {
+    if (cameraLifecycleRef.current) return cameraLifecycleRef.current;
+    const video = videoRef.current;
+    if (!video) throw new Error("Camera video element is unavailable");
+    cameraLifecycleRef.current = new CameraLifecycleController(video, {
+      acquire: () => navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: false,
+      }),
+      requestFrame: (callback) => requestAnimationFrame(callback),
+      cancelFrame: (id) => cancelAnimationFrame(id),
+      setInterval: (callback, milliseconds) => window.setInterval(callback, milliseconds),
+      clearInterval: (id) => clearInterval(id),
+      revokeObjectUrl: (url) => URL.revokeObjectURL(url),
+    });
+    return cameraLifecycleRef.current;
+  };
+
   // Start Camera
   const startCamera = async (resume: boolean = false) => {
     // Clear old download/decoding state
@@ -407,13 +697,11 @@ function App() {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment", width: { ideal: 640 }, height: { ideal: 480 } },
-        audio: false,
-      });
+      const lifecycle = getCameraLifecycle();
+      await (resume ? lifecycle.reconnect() : lifecycle.start());
 
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
+        receiverSessionControllerRef.current?.setReceiving(true);
         setIsCameraActive(true);
         if (!resume) {
           setScanStatus("listening");
@@ -433,20 +721,46 @@ function App() {
 
   // Stop Camera
   const stopCamera = () => {
-    if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
-    if (rxSpeedIntervalRef.current) clearInterval(rxSpeedIntervalRef.current);
+    cameraLifecycleRef.current?.stop();
+    scanLoopRef.current = null;
+    rxSpeedIntervalRef.current = null;
+    receiverSessionControllerRef.current?.setReceiving(false);
 
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach((track) => track.stop());
-      videoRef.current.srcObject = null;
+    if (currentSessionRef.current && currentSessionRef.current.status === "active") {
+      try {
+        const paused = transitionSession(currentSessionRef.current, "paused");
+        currentSessionRef.current = paused;
+        persistenceQueueRef.current?.setSession(paused);
+        void persistenceQueueRef.current?.flush();
+      } catch (err) {
+        console.warn("Receiver stopCamera session transition warning:", err);
+      }
     }
 
     setIsCameraActive(false);
     setScanStatus("idle");
   };
 
-  const resetReceiverState = () => {
+  const resetReceiverState = (resetAuthoritative = true) => {
+    finalizationGenerationGuardRef.current.invalidate();
+    receiverSessionControllerRef.current?.setFinalizing(false);
+    setIsReceiverFinalizing(false);
+    liveReceiverRouterRef.current = null;
+    if (resetAuthoritative) reconstructionServiceRef.current.reset();
+    applicationFinalizationRef.current = null;
+    if (persistenceQueueRef.current) {
+      void persistenceQueueRef.current.flush();
+      persistenceQueueRef.current.destroy();
+      persistenceQueueRef.current = null;
+    }
+    currentTransferIdRef.current = null;
+    currentSessionRef.current = null;
+    persistedResolvedIndicesRef.current.clear();
+    setDurableCheckpointsCount(0);
+    setPersistedSymbolsCount(0);
+    setQueueStatus("idle");
+    setPersistenceError(null);
+
     seqBlocksMapRef.current.clear();
     fountainDecoderRef.current = null;
     setReceivedMeta(null);
@@ -481,6 +795,7 @@ function App() {
     capturedFramesCountRef.current = 0;
     totalDecodeTimeRef.current = 0;
   };
+  resetReceiverStateRef.current = () => resetReceiverState();
 
   const sampleReceiveSpeed = () => {
     const meta = receivedMetaRef.current;
@@ -497,17 +812,17 @@ function App() {
     setRxStats((prev) => ({ ...prev, speedKbs }));
   };
 
-  // Continuous QR Scanner Loop
+  // Continuous transport-specific optical receiver loop.
   const startScanningLoop = () => {
-    if (scanLoopRef.current) cancelAnimationFrame(scanLoopRef.current);
+    const lifecycle = getCameraLifecycle();
+    lifecycle.clearScheduledWork();
 
     // Performance trackers
     let lastFpsTime = performance.now();
     lastScanTimeRef.current = performance.now();
 
     // Start speed measuring interval (every 1 second)
-    if (rxSpeedIntervalRef.current) clearInterval(rxSpeedIntervalRef.current);
-    rxSpeedIntervalRef.current = window.setInterval(() => {
+    rxSpeedIntervalRef.current = lifecycle.registerInterval(() => {
       // Camera Stream Watchdog
       const video = videoRef.current;
       if (video && video.srcObject) {
@@ -559,40 +874,81 @@ function App() {
             lastFpsTime = now;
           }
 
-          // Scan QR from Canvas
-          const scanResult = await scanQRCode(canvas);
+          const configured = receiverSessionControllerRef.current?.getConfiguration() ?? {
+            transport: selectedTransport,
+            vlcModulation,
+            ofdmModulation,
+            ofdmGridSize: ofdmGridSize as 8 | 16 | 32,
+          };
+          const router = liveReceiverRouterRef.current ?? new LiveReceiverRouter({
+            transport: configured.transport,
+            ofdmModulation: configured.ofdmModulation,
+            ofdmGridSize: configured.ofdmGridSize,
+          });
+          liveReceiverRouterRef.current = router;
+          const scanResult = await router.ingest(canvas);
+          const decodedCount = scanResult.payloads.length;
+          const corrupt = scanResult.crcStatus === "failed" || scanResult.crcStatus === "invalid";
 
           totalDecodeTimeRef.current += scanResult.durationMs;
           setRxStats((prev) => ({
             ...prev,
             decodeAttempts: prev.decodeAttempts + 1,
             averageDecodeMs: totalDecodeTimeRef.current / (prev.decodeAttempts + 1),
-            decodedFrames: prev.decodedFrames + (scanResult.outcome === "decoded" ? 1 : 0),
-            missedFrames: prev.missedFrames + (scanResult.outcome === "no-signal" ? 1 : 0),
-            invalidFrames: prev.invalidFrames + (scanResult.outcome === "invalid" ? 1 : 0),
+            decodedFrames: prev.decodedFrames + decodedCount,
+            missedFrames: prev.missedFrames + (decodedCount === 0 && !corrupt ? 1 : 0),
+            invalidFrames: prev.invalidFrames + (corrupt ? 1 : 0),
           }));
 
-          if (scanResult.outcome === "decoded" && scanResult.bytes) {
-            console.log("Decode success");
-            await processScannedBytes(scanResult.bytes);
+          for (const payload of scanResult.payloads) {
+            await processScannedBytes(payload);
           }
         }
       } catch (err) {
-        console.error("Frame processing error:", err);
+        console.error(`${selectedTransport} receiver pipeline error:`, err);
+        setScanStatus("failed");
       } finally {
         if (videoRef.current && videoRef.current.srcObject) {
-          scanLoopRef.current = requestAnimationFrame(scanFrame);
+          scanLoopRef.current = lifecycle.scheduleFrame(scanFrame);
         }
       }
     };
 
-    scanLoopRef.current = requestAnimationFrame(scanFrame);
+    scanLoopRef.current = lifecycle.scheduleFrame(scanFrame);
   };
 
   // Decode binary data packets
   const processScannedBytes = async (bytes: Uint8Array) => {
     if (bytes.length === 0) return;
+    const reconstruction = reconstructionServiceRef.current.ingest(bytes);
+    if (reconstruction.finalization && !applicationFinalizationRef.current) {
+      const finalizationGeneration = finalizationGenerationGuardRef.current.capture();
+      receiverSessionControllerRef.current?.setFinalizing(true);
+      setIsReceiverFinalizing(true);
+      applicationFinalizationRef.current = reconstruction.finalization
+        .then((result) => {
+          if (!finalizationGenerationGuardRef.current.isCurrent(finalizationGeneration)) return;
+          return completeApplicationReconstruction(result);
+        })
+        .catch((error) => {
+          if (!finalizationGenerationGuardRef.current.isCurrent(finalizationGeneration)) return;
+          console.error("Application reconstruction failed:", error);
+          setScanStatus("failed");
+        })
+        .finally(() => {
+          if (!finalizationGenerationGuardRef.current.isCurrent(finalizationGeneration)) return;
+          receiverSessionControllerRef.current?.setFinalizing(false);
+          setIsReceiverFinalizing(false);
+        });
+    }
     const type = bytes[0] as FrameType;
+
+    // Legacy persistence/UI mirrors are adapters only: a payload rejected by the
+    // authoritative reconstruction service must never mutate their state.
+    if (!reconstruction.accepted && !reconstruction.duplicate) return;
+    // An authoritative transfer-identity reset must clear every downstream
+    // persistence/UI mirror before the accepted replacement metadata is applied.
+    if (reconstruction.reset) resetReceiverState(false);
 
     // Handle Metadata frame
     if (type === FrameType.Metadata) {
@@ -610,6 +966,61 @@ function App() {
           // Pre-initialize fountain decoder if needed
           if (!fountainDecoderRef.current) {
             fountainDecoderRef.current = new FountainDecoder(meta.totalBlocks, meta.blockSize);
+          }
+
+          // Setup persistence queue for this transfer
+          const legacyId = await deriveLegacySessionId(meta);
+          if (currentTransferIdRef.current !== legacyId) {
+            if (persistenceQueueRef.current) {
+              await persistenceQueueRef.current.flush();
+              persistenceQueueRef.current.destroy();
+            }
+            currentTransferIdRef.current = legacyId;
+            persistedResolvedIndicesRef.current.clear();
+            const hexHash = bytesToHex(meta.fileHash);
+            const rxSession: TransferSession = {
+              schemaVersion: 1,
+              transferId: legacyId,
+              protocolVersion: 1,
+              direction: "receive",
+              transport: receiverSessionControllerRef.current?.getConfiguration().transport ?? selectedTransport,
+              file: {
+                name: meta.fileName,
+                size: meta.fileSize,
+                mimeType: meta.dataType === "message" ? "text/plain" : "application/octet-stream",
+                sha256Hex: hexHash,
+                mediaKind: "other",
+              },
+              fileHashHex: hexHash,
+              blockSize: meta.blockSize,
+              totalBlocks: meta.totalBlocks,
+              status: "active",
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              completedAt: null,
+              resumeCapability: "none",
+              encodingMode: "fountain",
+              acceptedSymbols: 0,
+              resolvedBlocks: 0,
+              checkpointVersion: 1,
+              failureCode: null,
+              transportConfig: {},
+            };
+            currentSessionRef.current = rxSession;
+            const currentPersistence = persistenceRef.current;
+            if (currentPersistence) {
+              const queue = new PersistenceQueue(legacyId, currentPersistence, {
+                batchSize: 16,
+                flushIntervalMs: 250,
+                checkpointSymbolInterval: 16,
+                onStatusChange: (status, err) => {
+                  setQueueStatus(status);
+                  setPersistenceError(err ?? null);
+                },
+              });
+              queue.setSession(rxSession);
+              persistenceQueueRef.current = queue;
+            }
           }
         }
       } catch (err) {
@@ -635,9 +1046,17 @@ function App() {
           const currentCount = seqBlocksMapRef.current.size;
           setResolvedBlocksCount(currentCount);
 
+          if (persistenceQueueRef.current && receivedMetaRef.current) {
+            const meta = receivedMetaRef.current;
+            const logicalLen = (blockIndex === meta.totalBlocks - 1)
+              ? (meta.fileSize % meta.blockSize) || meta.blockSize
+              : meta.blockSize;
+            persistenceQueueRef.current.queueChunk(blockIndex, payload, logicalLen, meta.blockSize);
+          }
+
           // Check if complete
           if (currentCount === receivedMetaRef.current.totalBlocks) {
-            finalizeSequentialTransfer();
+            // The shared reconstruction service owns completion and SHA-256 finalization.
           }
         }
       } catch (err) {
@@ -651,24 +1070,8 @@ function App() {
       try {
         const { seed, degree, totalBlocks, payload } = decodeFountainFrame(bytes);
 
-        // Auto-initialize metadata placeholder if we missed the metadata frame but got a fountain frame
-        if (!receivedMetaRef.current) {
-          const placeholderMeta: FileMetadata = {
-            dataType: "file",
-            fileSize: totalBlocks * payload.length, // approximation
-            blockSize: payload.length,
-            totalBlocks: totalBlocks,
-            fileHash: new Uint8Array(32), // empty placeholder until metadata comes
-            fileName: "reconstructed_file",
-          };
-          setReceivedMeta(placeholderMeta);
-          receivedMetaRef.current = placeholderMeta;
-          setScanStatus("receiving");
-          if (rxStartedAtRef.current === null) {
-            rxStartedAtRef.current = performance.now();
-            lastSpeedSampleAtRef.current = rxStartedAtRef.current;
-          }
-        }
+        // Metadata is required by the authoritative reconstruction service.
+        if (!receivedMetaRef.current) return;
 
         const K = totalBlocks;
         if (!fountainDecoderRef.current) {
@@ -689,11 +1092,54 @@ function App() {
           setRxStats((prev) => ({ ...prev, duplicateFrames: prev.duplicateFrames + 1 }));
         } else {
           console.log("Symbol accepted");
-          setRxStats((prev) => ({ ...prev, acceptedSymbols: prev.acceptedSymbols + 1 }));
+          setRxStats((prev) => {
+            const nextAccepted = prev.acceptedSymbols + 1;
+            if (persistenceQueueRef.current) {
+              persistenceQueueRef.current.queueSymbol(symbol, nextAccepted);
+              setPersistedSymbolsCount(nextAccepted);
+            }
+            return { ...prev, acceptedSymbols: nextAccepted };
+          });
+
+          // Check if new blocks got resolved and queue chunks + checkpoints
+          const decoder = fountainDecoderRef.current;
+          const meta = receivedMetaRef.current;
+          if (decoder && persistenceQueueRef.current && meta && currentTransferIdRef.current) {
+            const resolvedIndices = decoder.getResolvedIndices();
+            for (const idx of resolvedIndices) {
+              if (!persistedResolvedIndicesRef.current.has(idx)) {
+                persistedResolvedIndicesRef.current.add(idx);
+                const block = decoder.getResolvedBlock(idx);
+                if (block) {
+                  const logicalLen = (idx === meta.totalBlocks - 1)
+                    ? (meta.fileSize % meta.blockSize) || meta.blockSize
+                    : meta.blockSize;
+                  persistenceQueueRef.current.queueChunk(idx, block, logicalLen, meta.blockSize);
+                }
+              }
+            }
+
+            if (resolvedIndices.length > 0) {
+              setDurableCheckpointsCount((c) => c + 1);
+              persistenceQueueRef.current.setCheckpoint({
+                schemaVersion: 1,
+                transferId: currentTransferIdRef.current,
+                acceptedSymbols: rxStats.acceptedSymbols + 1,
+                resolvedBlockIndices: resolvedIndices,
+                persistedChunks: persistedResolvedIndicesRef.current.size,
+                metrics: {
+                  throughputBytesPerSecond: rxStats.speedKbs * 1024,
+                  cameraFps: rxStats.cameraFps,
+                  decodeFps: rxStats.decodeFps,
+                },
+                createdAt: Date.now(),
+              });
+            }
+          }
         }
 
         if (isDone) {
-          finalizeFountainTransfer();
+          // The shared reconstruction service owns completion and SHA-256 finalization.
         }
       } catch (err) {
         console.error("Failed to decode fountain frame:", err);
@@ -702,23 +1148,13 @@ function App() {
     }
   };
 
-  // Rebuild and save files
-  const finalizeSequentialTransfer = async () => {
-    const meta = receivedMetaRef.current;
-    if (!meta) return;
+  const completeApplicationReconstruction = async (result: ReconstructionResult) => {
     sampleReceiveSpeed();
     stopCamera();
     setScanStatus("success");
     rxCompletedAtRef.current = performance.now();
-
-    // Collect blocks in order
-    const blocks: Uint8Array[] = [];
-    for (let i = 0; i < meta.totalBlocks; i++) {
-      blocks.push(seqBlocksMapRef.current.get(i) || new Uint8Array(meta.blockSize));
-    }
-
-    const fileData = reassembleFile(blocks, meta.fileSize, meta.blockSize);
-    await verifyAndSaveFile(fileData);
+    const observedHash = Uint8Array.from(result.actualSha256.match(/.{2}/g) ?? [], (value) => Number.parseInt(value, 16));
+    await verifyAndSaveFile(result.data, observedHash);
   };
 
   const finalizeFountainTransfer = async () => {
@@ -734,13 +1170,13 @@ function App() {
     await verifyAndSaveFile(fileData);
   };
 
-  const verifyAndSaveFile = async (fileData: Uint8Array) => {
+  const verifyAndSaveFile = async (fileData: Uint8Array, precomputedHash?: Uint8Array) => {
     const meta = receivedMetaRef.current;
     if (!meta) return;
 
     // Verify SHA-256 Hash
     setIntegrityResult({ status: "verifying", bitPerfect: false });
-    const hashArray = await sha256(fileData);
+    const hashArray = precomputedHash ?? await sha256(fileData);
 
     let isMatch = true;
 
@@ -760,6 +1196,23 @@ function App() {
       setIntegrityResult(createIntegrityResult(null, hashArray, meta.fileSize, fileData.byteLength));
     }
 
+    if (currentSessionRef.current) {
+      try {
+        const nextStatus = isMatch ? "complete" : "failed";
+        let updatedSession = transitionSession(currentSessionRef.current, nextStatus);
+        if (isMatch) {
+          updatedSession = setResumeCapability(updatedSession, "complete");
+        }
+        currentSessionRef.current = updatedSession;
+        persistenceQueueRef.current?.setSession(updatedSession);
+      } catch (err) {
+        console.warn("Session transition on verification warning:", err);
+      }
+    }
+    if (persistenceQueueRef.current) {
+      await persistenceQueueRef.current.flush();
+    }
+
     // Handle Message vs File
     if (meta.dataType === "message") {
       const decoder = new TextDecoder();
@@ -770,6 +1223,7 @@ function App() {
       const blob = new Blob([fileData.buffer as ArrayBuffer], { type: "application/octet-stream" });
       setReceivedMediaMetadata(await extractMediaMetadata(blob, meta.fileName));
       const url = URL.createObjectURL(blob);
+      cameraLifecycleRef.current?.registerObjectUrl(url);
       setDownloadUrl(url);
     }
   };
@@ -781,6 +1235,11 @@ function App() {
     }
   }, [activeTab, isCameraActive]);
 
+  useEffect(() => () => {
+    cameraLifecycleRef.current?.dispose();
+    cameraLifecycleRef.current = null;
+  }, []);
+
   const recoveredBytes = receivedMeta
     ? Math.min(receivedMeta.fileSize, resolvedBlocksCount * receivedMeta.blockSize)
     : 0;
@@ -790,6 +1249,70 @@ function App() {
   const receiverRemainingMs = receivedMeta && recoveredBytes < receivedMeta.fileSize && rxStats.speedKbs > 0
     ? ((receivedMeta.fileSize - recoveredBytes) / (rxStats.speedKbs * 1024)) * 1000
     : recoveredBytes >= (receivedMeta?.fileSize ?? Number.POSITIVE_INFINITY) ? 0 : null;
+
+  const handleSelectReceiverResume = (session: TransferSession, replay: ReplayResult) => {
+    setActiveTab("receive");
+    setScanStatus("listening");
+
+    const hexHash = session.file.sha256Hex;
+    const match = hexHash.match(/.{1,2}/g);
+    const hashBytes = new Uint8Array(match ? match.map((byte) => parseInt(byte, 16)) : []);
+    const meta: FileMetadata = {
+      fileName: session.file.name,
+      fileSize: session.file.size,
+      blockSize: session.blockSize,
+      totalBlocks: session.totalBlocks,
+      fileHash: hashBytes,
+      dataType: "file",
+    };
+    setReceivedMeta(meta);
+    receivedMetaRef.current = meta;
+    currentTransferIdRef.current = session.transferId;
+    currentSessionRef.current = session;
+
+    fountainDecoderRef.current = replay.decoder;
+    setResolvedBlocksCount(replay.resolvedIndices.length);
+    persistedResolvedIndicesRef.current = new Set(replay.resolvedIndices);
+    setPersistedSymbolsCount(replay.replayedSymbols);
+
+    if (persistenceRef.current) {
+      const queue = new PersistenceQueue(session.transferId, persistenceRef.current, {
+        batchSize: 16,
+        flushIntervalMs: 250,
+        onStatusChange: (status: PersistenceQueueStatus, err?: string | null) => {
+          setQueueStatus(status);
+          if (err) setPersistenceError(err);
+        },
+      });
+      persistenceQueueRef.current = queue;
+    }
+
+    if (replay.isComplete) {
+      void finalizeFountainTransfer();
+    } else {
+      void startCamera(true);
+    }
+  };
+
+  const handleSelectSenderResume = useCallback(async (session: TransferSession, file: File) => {
+    setActiveTab("send");
+    setTransferType("file");
+    setSendFile(file);
+    setBlockSize(session.blockSize);
+    setSendMode(session.encodingMode);
+    currentSenderSessionRef.current = session;
+    if (persistenceRef.current) {
+      try {
+        const activeSession = transitionSession(session, "active", Date.now());
+        await persistenceRef.current.sessions.put(activeSession);
+        currentSenderSessionRef.current = activeSession;
+        void refreshSavedSessionsCount();
+      } catch (err) {
+        console.warn("Error updating resumed sender session:", err);
+      }
+    }
+    setIsSending(true);
+  }, [refreshSavedSessionsCount]);
 
   return (
     <>
@@ -807,6 +1330,7 @@ function App() {
             <a href="#features" className="ollyo-nav-link">Capabilities</a>
             <a href="#use-cases" className="ollyo-nav-link">Use Cases</a>
             <a href="#performance" className="ollyo-nav-link">Performance</a>
+            <a href="#research" className="ollyo-nav-link">Research</a>
             <a href="#demo" className="ollyo-nav-link">Live Demo</a>
           </nav>
           <a href="#demo" className="ollyo-nav-cta">Launch Demo</a>
@@ -998,6 +1522,8 @@ function App() {
               <div className="ollyo-metric-lbl">Effective Throughput</div>
             </div>
             <div className="ollyo-metric-card">
+            </div>
+            <div className="ollyo-metric-card">
               <div className="ollyo-metric-val">SHA-256</div>
               <div className="ollyo-metric-lbl">Bit-Perfect Completion Check</div>
             </div>
@@ -1051,6 +1577,13 @@ function App() {
         </div>
       </section>
 
+      {/* Research Dashboard Section */}
+      <section className="ollyo-section" id="research">
+        <div className="ollyo-container">
+          <ResearchDashboard persistence={persistence} />
+        </div>
+      </section>
+
       {/* Live Demo Console Container */}
       <section className="ollyo-section" id="demo">
         <div className="ollyo-container">
@@ -1059,7 +1592,7 @@ function App() {
             Experience Optical Transfer in Action.
           </h2>
 
-          <div className="ollyo-demo-wrapper">
+          <div className="ollyo-demo">
             <nav className="tabs">
               <button
                 className={`tab-btn ${activeTab === "send" ? "active" : ""}`}
@@ -1082,7 +1615,16 @@ function App() {
                   <div className="sender-controls">
                     <h2 style={{ textAlign: "left", marginBottom: "20px" }}>Transfer Settings</h2>
 
-                    <div className="form-group">
+                    <StorageStatus
+                      backendKind={persistence?.kind ?? "memory"}
+                      queueStatus={currentSenderSessionRef.current ? "saved" : "idle"}
+                      capabilities={storageCaps}
+                      fallbackReason={persistence?.fallbackReason}
+                      recoverableCount={savedSessionsCount}
+                      onOpenRecovery={() => setIsRecoveryOpen(true)}
+                    />
+
+                    <div className="form-group" style={{ marginTop: "16px" }}>
                       <label className="form-label">Transfer Type</label>
                       <div className="transfer-type-toggle" role="group" aria-label="Transfer type">
                         <button type="button" className={`transfer-type-btn ${transferType === "file" ? "active" : ""}`} onClick={() => setTransferType("file")} disabled={isSending}>File</button>
@@ -1128,11 +1670,130 @@ function App() {
                     <div className="form-group">
                       <label className="form-label">Optical Transport</label>
                       <div className="mode-selector" role="list" aria-label="Optical transports">
-                        <button type="button" className="mode-option selected" disabled={isSending}><ModeBadge transport={TransportId.QR} /><small>Available baseline</small></button>
-                        <button type="button" className="mode-option" disabled><ModeBadge transport={TransportId.VLC} /><small>Brightness + RGB planned for Phase 3</small></button>
-                        <button type="button" className="mode-option" disabled><ModeBadge transport={TransportId.VisualOFDM} /><small>Planned for Phase 4</small></button>
+                        <button
+                          type="button"
+                          className={`mode-option ${selectedTransport === TransportId.QR ? "selected" : ""}`}
+                          onClick={() => setSelectedTransport(TransportId.QR)}
+                          disabled={isSending || isCameraActive || isReceiverFinalizing}
+                        >
+                          <ModeBadge transport={TransportId.QR} />
+                          <small>Verified Baseline</small>
+                        </button>
+                        <button
+                          type="button"
+                          className={`mode-option ${selectedTransport === TransportId.VLC ? "selected" : ""}`}
+                          onClick={() => setSelectedTransport(TransportId.VLC)}
+                          disabled={isSending || isCameraActive || isReceiverFinalizing}
+                        >
+                          <ModeBadge transport={TransportId.VLC} />
+                          <small>Experimental Prototype</small>
+                        </button>
+                        <button
+                          type="button"
+                          className={`mode-option ${selectedTransport === TransportId.VisualOFDM ? "selected" : ""}`}
+                          onClick={() => setSelectedTransport(TransportId.VisualOFDM)}
+                          disabled={isSending || isCameraActive || isReceiverFinalizing}
+                        >
+                          <ModeBadge transport={TransportId.VisualOFDM} />
+                          <small>Experimental Prototype</small>
+                        </button>
                       </div>
                     </div>
+
+                    {selectedTransport === TransportId.VLC && (
+                      <div className="vlc-controls-panel" style={{
+                        background: "rgba(234, 179, 8, 0.08)",
+                        border: "1px solid rgba(234, 179, 8, 0.3)",
+                        borderRadius: "8px",
+                        padding: "14px",
+                        marginBottom: "16px",
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                          <span style={{ fontWeight: 600, color: "#fde047", fontSize: "13px" }}>
+                            ⚠️ VLC Mode (Experimental Prototype)
+                          </span>
+                        </div>
+                        <p style={{ fontSize: "12px", color: "#d1d5db", margin: "0 0 10px 0" }}>
+                          Visible Light Communication is an experimental prototype. Screen-to-camera transmission is unverified in hardware.
+                        </p>
+                        <div className="form-group" style={{ marginBottom: 0 }}>
+                          <label className="form-label" style={{ fontSize: "12px" }}>VLC Modulation Scheme</label>
+                          <select
+                            className="form-select"
+                            value={vlcModulation}
+                            onChange={(e) => setVlcModulation(e.target.value as VlcModulationScheme)}
+                            disabled={isSending || isCameraActive || isReceiverFinalizing}
+                            style={{ fontSize: "12px" }}
+                          >
+                            <option value="ook">OOK (On-Off Keying · 1 bit/symbol)</option>
+                            <option value="pam4">4-PAM (Pulse Amplitude Modulation · 2 bits/symbol)</option>
+                            <option value="csk8">CSK-8 (Color-Shift Keying · 3 bits/symbol)</option>
+                            <option value="csk16">CSK-16 (Color-Shift Keying · 4 bits/symbol)</option>
+                          </select>
+                        </div>
+
+                        <VlcWaveformInspector
+                          modulation={vlcModulation}
+                          calibration={vlcCalibration}
+                          demodStatus="idle"
+                        />
+                      </div>
+                    )}
+
+                    {selectedTransport === TransportId.VisualOFDM && (
+                      <div className="vlc-controls-panel" style={{
+                        background: "rgba(99, 102, 241, 0.08)",
+                        border: "1px solid rgba(99, 102, 241, 0.3)",
+                        borderRadius: "8px",
+                        padding: "14px",
+                        marginBottom: "16px",
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                          <span style={{ fontWeight: 600, color: "#a5b4fc", fontSize: "13px" }}>
+                            ⚠️ Visual OFDM (Experimental Prototype)
+                          </span>
+                        </div>
+                        <p style={{ fontSize: "12px", color: "#d1d5db", margin: "0 0 10px 0" }}>
+                          Visual OFDM is an experimental spatial-frequency prototype. Screen-to-camera optical transmission is not physically tested.
+                        </p>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", marginBottom: "10px" }}>
+                          <div className="form-group" style={{ marginBottom: 0 }}>
+                            <label className="form-label" style={{ fontSize: "12px" }}>Modulation Scheme</label>
+                            <select
+                              className="form-select"
+                              value={ofdmModulation}
+                              onChange={(e) => setOfdmModulation(e.target.value as OfdmModulationScheme)}
+                              disabled={isSending || isCameraActive || isReceiverFinalizing}
+                              style={{ fontSize: "12px" }}
+                            >
+                              <option value="bpsk">BPSK (1 bit/carrier · Real Basis)</option>
+                              <option value="qpsk">QPSK (2 bits/carrier · 4-Level)</option>
+                              <option value="16qam">16-QAM (4 bits/carrier)</option>
+                            </select>
+                          </div>
+                          <div className="form-group" style={{ marginBottom: 0 }}>
+                            <label className="form-label" style={{ fontSize: "12px" }}>Spatial Grid Size</label>
+                            <select
+                              className="form-select"
+                              value={ofdmGridSize}
+                              onChange={(e) => setOfdmGridSize(Number(e.target.value))}
+                              disabled={isSending || isCameraActive || isReceiverFinalizing}
+                              style={{ fontSize: "12px" }}
+                            >
+                              <option value={8}>8×8 Grid (64 carriers)</option>
+                              <option value={16}>16×16 Grid (256 carriers)</option>
+                              <option value={32}>32×32 Grid (1024 carriers)</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <OfdmSpectrumInspector
+                          modulation={ofdmModulation}
+                          gridSize={ofdmGridSize}
+                          gridMap={ofdmSubcarrierMap}
+                        />
+                      </div>
+                    )}
 
                     <div className="form-group">
                       <label className="form-label">QR Reliability Mode</label>
@@ -1239,6 +1900,7 @@ function App() {
                         style={{ width: "100%", height: "auto", display: "block" }}
                       />
                       <div className="canvas-caption">
+                        <ProtocolRendererDiagnostics diagnostics={rendererDiagnostics} />
                         {isSending ? (
                           <div>
                             <span style={{ color: "var(--color-accent)", fontWeight: "bold" }}>● TRANSMITTING</span>
@@ -1252,7 +1914,7 @@ function App() {
                               : `Current Seed: 0x${senderStats.fountainSeed.toString(16).toUpperCase()}`}
                           </div>
                         ) : (transferType === "file" ? sendFile : sendText.trim()) ? (
-                          "Ready. Click Start to stream QR codes."
+                          `Ready. Click Start to transmit ${selectedTransport === TransportId.QR ? "QR frames" : selectedTransport === TransportId.VLC ? "VLC optical symbols" : "Visual OFDM carrier grids"}.`
                         ) : (
                           transferType === "file" ? "Select a file to begin." : "Write a message to begin."
                         )}
@@ -1325,12 +1987,7 @@ function App() {
 
                     <div className="form-group">
                       <span className={`status-badge ${scanStatus}`}>
-                        {scanStatus === "idle" && "Idle"}
-                        {scanStatus === "listening" && "Scanning..."}
-                        {scanStatus === "receiving" && "Transferring..."}
-                        {scanStatus === "success" && "Success"}
-                        {scanStatus === "failed" && "Failed"}
-                        {scanStatus === "reconnecting" && "Camera disconnected, reconnecting..."}
+                        {scanStatus === "idle" ? "Idle" : scanStatus === "listening" ? "Scanning..." : scanStatus === "receiving" ? "Transferring..." : scanStatus === "success" ? "Success" : scanStatus === "failed" ? "Failed" : "Camera disconnected, reconnecting..."}
                       </span>
                       {!zxingReady && (
                         <span style={{ marginLeft: "12px", fontSize: "13px", color: "var(--color-accent)" }}>
@@ -1369,6 +2026,18 @@ function App() {
                       </div>
                     </div>
 
+                    <StorageStatus
+                      backendKind={persistence?.kind ?? "memory"}
+                      queueStatus={queueStatus}
+                      capabilities={storageCaps}
+                      error={persistenceError}
+                      fallbackReason={persistence?.fallbackReason}
+                      durableCheckpoints={durableCheckpointsCount}
+                      persistedSymbols={persistedSymbolsCount}
+                      recoverableCount={savedSessionsCount}
+                      onOpenRecovery={() => setIsRecoveryOpen(true)}
+                    />
+
                     <TransferStatistics
                       fileName={receivedMeta?.fileName ?? "Waiting for metadata"}
                       fileSize={receivedMeta?.fileSize ?? 0}
@@ -1383,6 +2052,8 @@ function App() {
                       throughputBytesPerSecond={rxStats.speedKbs * 1024}
                       elapsedMs={receiverElapsedMs}
                       remainingMs={receiverRemainingMs}
+                      persistenceStatus={queueStatus}
+                      durableCheckpoints={durableCheckpointsCount}
                     />
 
                     <OpticalSignalMetrics
@@ -1425,7 +2096,7 @@ function App() {
                           <DownloadIcon />
                           Download File
                         </a>
-                        <button className="btn btn-secondary" onClick={resetReceiverState}>
+                        <button className="btn btn-secondary" onClick={() => resetReceiverState()}>
                           Reset Scanner
                         </button>
                       </div>
@@ -1435,7 +2106,7 @@ function App() {
                       <div className="received-message-container">
                         <div className="received-message-title">Message Received</div>
                         <div className="received-message-body">{receivedMessage}</div>
-                        <button className="btn btn-secondary" onClick={resetReceiverState}>Reset Scanner</button>
+                        <button className="btn btn-secondary" onClick={() => resetReceiverState()}>Reset Scanner</button>
                       </div>
                     )}
                   </div>
@@ -1459,6 +2130,7 @@ function App() {
               <a href="#technology">Technology</a>
               <a href="#features">Capabilities</a>
               <a href="#use-cases">Use Cases</a>
+              <a href="#research">Research</a>
               <a href="https://github.com/akhlak007/qr_transfer" target="_blank" rel="noreferrer">GitHub</a>
               <a href="#demo">Launch Console</a>
             </div>
@@ -1468,9 +2140,19 @@ function App() {
           </div>
         </div>
       </footer>
+
+      <RecoveryModal
+        isOpen={isRecoveryOpen}
+        onClose={() => {
+          setIsRecoveryOpen(false);
+          void refreshSavedSessionsCount();
+        }}
+        persistence={persistence}
+        onSelectReceiverResume={handleSelectReceiverResume}
+        onSelectSenderResume={handleSelectSenderResume}
+      />
     </>
   );
 }
 
 export default App;
-
