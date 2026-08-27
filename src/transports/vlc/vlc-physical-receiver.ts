@@ -88,7 +88,8 @@ export class PhysicalVlcReceiver {
     this.sampledLuminance = luminance;
     this.observations++;
     this.observationGapMs = this.previousLevel === null ? 0 : capturedAt - this.previousAt;
-    if (this.previousLevel !== null && capturedAt - this.previousAt > this.chipPeriodMs * 0.75) {
+    // Tolerate normal camera jitter while dropping lock on a true camera stall (>1.5 chip periods)
+    if (this.previousLevel !== null && capturedAt - this.previousAt > this.chipPeriodMs * 1.5) {
       this.resetClock("CLOCK_LOST");
       this.previousAt = capturedAt;
       return this.traceObservation(capturedAt, previousState);
@@ -98,7 +99,7 @@ export class PhysicalVlcReceiver {
     this.low = Math.min(...this.luminanceWindow);
     this.high = Math.max(...this.luminanceWindow);
     const range = this.high - this.low;
-    if (range < 20) {
+    if (range < 12) {
       this.state = "SIGNAL_TOO_WEAK";
       return this.traceObservation(capturedAt, previousState);
     }

@@ -630,6 +630,7 @@ function App() {
   const [isReceiverFinalizing, setIsReceiverFinalizing] = useState(false);
   const [scanStatus, setScanStatus] = useState<"idle" | "listening" | "receiving" | "success" | "failed" | "reconnecting">("idle");
   const [vlcAcknowledgement, setVlcAcknowledgement] = useState<string | null>(null);
+  const [vlcBitProgress, setVlcBitProgress] = useState<{ buffered: number; expected: number | null }>({ buffered: 0, expected: null });
   const [receivedMeta, setReceivedMeta] = useState<FileMetadata | null>(null);
   const receivedMetaRef = useRef<FileMetadata | null>(null);
 
@@ -777,6 +778,7 @@ function App() {
     fountainDecoderRef.current = null;
     setReceivedMeta(null);
     setVlcAcknowledgement(null);
+    setVlcBitProgress({ buffered: 0, expected: null });
     receivedMetaRef.current = null;
     setResolvedBlocksCount(0);
     setRxStats({
@@ -910,6 +912,13 @@ function App() {
           const scanResult = await router.ingest(canvas);
           if (scanResult.transport === TransportId.VLC && "acknowledgement" in scanResult && typeof scanResult.acknowledgement === "string") {
             setVlcAcknowledgement(scanResult.acknowledgement);
+          }
+          if (scanResult.transport === TransportId.VLC && "diagnostics" in scanResult && scanResult.diagnostics) {
+            const diag = scanResult.diagnostics as { bufferedFrameBits?: number; expectedFrameBits?: number | null };
+            setVlcBitProgress({
+              buffered: diag.bufferedFrameBits ?? 0,
+              expected: diag.expectedFrameBits ?? null,
+            });
           }
           const decodedCount = scanResult.payloads.length;
           const corrupt = scanResult.crcStatus === "failed" || scanResult.crcStatus === "invalid";
@@ -2095,7 +2104,11 @@ function App() {
                       <div className="progress-header">
                         <span>Reassembly Progress</span>
                         <span>
-                          {resolvedBlocksCount} / {receivedMeta?.totalBlocks || "?"} blocks
+                          {receivedMeta
+                            ? `${resolvedBlocksCount} / ${receivedMeta.totalBlocks} blocks (${Math.round((resolvedBlocksCount / receivedMeta.totalBlocks) * 100)}%)`
+                            : selectedTransport === TransportId.VLC && vlcBitProgress.expected && vlcBitProgress.expected > 0
+                              ? `${vlcBitProgress.buffered} / ${vlcBitProgress.expected} bits (${Math.min(99, Math.round((vlcBitProgress.buffered / vlcBitProgress.expected) * 100))}%)`
+                              : "Waiting for signal..."}
                         </span>
                       </div>
                       <div className="progress-bar-bg">
@@ -2104,7 +2117,9 @@ function App() {
                           style={{
                             width: receivedMeta
                               ? `${(resolvedBlocksCount / receivedMeta.totalBlocks) * 100}%`
-                              : "0%",
+                              : selectedTransport === TransportId.VLC && vlcBitProgress.expected && vlcBitProgress.expected > 0
+                                ? `${Math.min(99, (vlcBitProgress.buffered / vlcBitProgress.expected) * 100)}%`
+                                : "0%",
                           }}
                         />
                       </div>
