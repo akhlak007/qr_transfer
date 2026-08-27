@@ -525,7 +525,7 @@ export async function runFullBenchmarkSuite(
         metrics,
         timestamp: Date.now(),
       });
-    } catch (_err) {
+    } catch {
       results.push({
         config: cfg,
         success: false,

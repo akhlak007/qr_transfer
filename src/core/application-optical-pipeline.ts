@@ -1,6 +1,6 @@
 import { TransportId, type OpticalDecodeObservation } from "./transport";
 import { scanQRCode } from "../modules/qr-scan";
-import { VlcOokReceiver } from "../transports/vlc/vlc-receiver";
+import { VlcReceiver, type VlcReceiverModulation } from "../transports/vlc/vlc-receiver";
 import { encodeVlcFrame, type VlcModulationScheme } from "../transports/vlc/vlc-framing";
 import { modulateVlcFrame } from "../transports/vlc/vlc-modulator";
 import { VisualOfdmReceiver, type OfdmReceiverGridSize } from "../transports/ofdm/ofdm-receiver";
@@ -111,6 +111,7 @@ type QrDecoder = (source: OpticalCameraSource) => Promise<OpticalDecodeObservati
 
 export interface LiveReceiverConfiguration {
   transport: TransportId;
+  vlcModulation?: VlcModulationScheme;
   ofdmModulation: OfdmModulationScheme;
   ofdmGridSize: OfdmReceiverGridSize;
 }
@@ -118,7 +119,7 @@ export interface LiveReceiverConfiguration {
 export class LiveReceiverRouter {
   private readonly config: LiveReceiverConfiguration;
   private readonly qrDecoder: QrDecoder;
-  private readonly vlcReceiver: VlcOokReceiver | null;
+  private readonly vlcReceiver: VlcReceiver | null;
   private readonly ofdmReceiver: VisualOfdmReceiver | null;
   private readonly payloadQueue: Uint8Array[] = [];
 
@@ -131,7 +132,11 @@ export class LiveReceiverRouter {
     if (![TransportId.QR, TransportId.VLC, TransportId.VisualOFDM].includes(config.transport)) {
       throw new Error(`Unsupported live receiver transport: ${String(config.transport)}`);
     }
-    this.vlcReceiver = config.transport === TransportId.VLC ? new VlcOokReceiver() : null;
+    const vlcModulation: VlcReceiverModulation = config.vlcModulation === "pam4"
+      ? "4pam"
+      : config.vlcModulation ?? "ook";
+    this.vlcReceiver = config.transport === TransportId.VLC
+      ? new VlcReceiver({ modulation: vlcModulation }) : null;
     this.ofdmReceiver = config.transport === TransportId.VisualOFDM
       ? new VisualOfdmReceiver({ modulation: config.ofdmModulation, gridSize: config.ofdmGridSize }) : null;
     this.vlcReceiver?.onFrame((event) => { this.payloadQueue.push(event.rawPayload); });
@@ -161,4 +166,8 @@ export class LiveReceiverRouter {
     return { transport, payloads: this.payloadQueue.splice(0), crcStatus, recoveredFrames,
       durationMs: performance.now() - started };
   }
+}
+
+export function isVlcDecodeAttemptDue(lastAttemptAt: number, now: number, symbolRate: number): boolean {
+  return Number.isFinite(symbolRate) && symbolRate > 0 && now - lastAttemptAt >= 1000 / symbolRate;
 }

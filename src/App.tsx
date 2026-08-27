@@ -45,7 +45,7 @@ import { QRTransmitterRenderer } from "./transports/qr/qr-transmitter-renderer";
 import { VlcTransmitterRenderer } from "./transports/vlc/vlc-transmitter-renderer";
 import { VisualOfdmTransmitterRenderer } from "./transports/ofdm/visual-ofdm-transmitter-renderer";
 import { ProtocolRendererDiagnostics } from "./components/ProtocolRendererDiagnostics";
-import { LiveReceiverRouter, OpticalFrameScheduler } from "./core/application-optical-pipeline";
+import { isVlcDecodeAttemptDue, LiveReceiverRouter, OpticalFrameScheduler } from "./core/application-optical-pipeline";
 import { ApplicationReconstructionService, type ReconstructionResult } from "./core/application-reconstruction-service";
 import { CameraLifecycleController } from "./core/camera-lifecycle-controller";
 import { FinalizationGenerationGuard } from "./core/finalization-generation-guard";
@@ -861,8 +861,20 @@ function App() {
           capturedFramesCountRef.current++;
           setRxStats((prev) => ({ ...prev, cameraFramesCaptured: prev.cameraFramesCaptured + 1 }));
 
-          // Measure scan FPS
+          const configured = receiverSessionControllerRef.current?.getConfiguration() ?? {
+            transport: selectedTransport,
+            vlcModulation,
+            ofdmModulation,
+            ofdmGridSize: ofdmGridSize as 8 | 16 | 32,
+          };
+
+          // Decode VLC once per transmitted symbol instead of once per camera frame.
           const now = performance.now();
+          if (configured.transport === TransportId.VLC
+            && !isVlcDecodeAttemptDue(lastScanTimeRef.current, now, fps)) {
+            return;
+          }
+          lastScanTimeRef.current = now;
           scannedFramesCountRef.current++;
           if (now - lastFpsTime >= 1000) {
             const elapsed = now - lastFpsTime;
@@ -873,15 +885,9 @@ function App() {
             capturedFramesCountRef.current = 0;
             lastFpsTime = now;
           }
-
-          const configured = receiverSessionControllerRef.current?.getConfiguration() ?? {
-            transport: selectedTransport,
-            vlcModulation,
-            ofdmModulation,
-            ofdmGridSize: ofdmGridSize as 8 | 16 | 32,
-          };
           const router = liveReceiverRouterRef.current ?? new LiveReceiverRouter({
             transport: configured.transport,
+            vlcModulation: configured.vlcModulation,
             ofdmModulation: configured.ofdmModulation,
             ofdmGridSize: configured.ofdmGridSize,
           });
@@ -1984,6 +1990,50 @@ function App() {
                   {/* Right Column: Decoding Stats and Downloads */}
                   <div style={{ textAlign: "left" }}>
                     <h2 style={{ marginBottom: "20px" }}>Receiver Status</h2>
+
+                    <div className="form-group">
+                      <label className="form-label">Receive Mode</label>
+                      <select
+                        className="form-select"
+                        value={selectedTransport}
+                        onChange={(event) => setSelectedTransport(event.target.value as TransportId)}
+                        disabled={isCameraActive || isReceiverFinalizing}
+                      >
+                        <option value={TransportId.QR}>QR Streaming</option>
+                        <option value={TransportId.VLC}>VLC</option>
+                        <option value={TransportId.VisualOFDM}>Visual OFDM</option>
+                      </select>
+                    </div>
+
+                    {selectedTransport === TransportId.VLC && (
+                      <div className="form-group">
+                        <label className="form-label">VLC Modulation</label>
+                        <select
+                          className="form-select"
+                          value={vlcModulation}
+                          onChange={(event) => setVlcModulation(event.target.value as VlcModulationScheme)}
+                          disabled={isCameraActive || isReceiverFinalizing}
+                        >
+                          <option value="ook">OOK</option>
+                          <option value="pam4">4-PAM</option>
+                          <option value="csk8">CSK-8</option>
+                          <option value="csk16">CSK-16</option>
+                        </select>
+                        <label className="form-label" style={{ marginTop: "12px" }}>Symbol Rate</label>
+                        <input
+                          className="form-input"
+                          type="number"
+                          min="1"
+                          max="30"
+                          value={fps}
+                          onChange={(event) => setFps(Math.max(1, Math.min(30, Number(event.target.value) || 1)))}
+                          disabled={isCameraActive || isReceiverFinalizing}
+                        />
+                        <small style={{ display: "block", marginTop: "8px", color: "var(--text-secondary)" }}>
+                          Match the sender's VLC modulation and symbol rate ({fps} symbols/s) before starting the camera.
+                        </small>
+                      </div>
+                    )}
 
                     <div className="form-group">
                       <span className={`status-badge ${scanStatus}`}>

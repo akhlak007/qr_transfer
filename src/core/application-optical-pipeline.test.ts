@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { LiveReceiverRouter, OpticalFrameScheduler } from "./application-optical-pipeline";
+import { isVlcDecodeAttemptDue, LiveReceiverRouter, OpticalFrameScheduler } from "./application-optical-pipeline";
 import { TransportId } from "./transport";
 import { decodeVlcFrame, VLC_MAGIC } from "../transports/vlc/vlc-framing";
 import { createVlcRenderRepresentation } from "../transports/vlc/vlc-transmitter-renderer";
@@ -64,6 +64,37 @@ test("unknown live receiver transport fails explicitly", () => {
     ofdmModulation: "bpsk",
     ofdmGridSize: 8,
   }), /Unsupported live receiver transport/);
+});
+
+test("VLC camera frames are sampled at the configured symbol rate", () => {
+  assert.equal(isVlcDecodeAttemptDue(1_000, 1_099, 10), false);
+  assert.equal(isVlcDecodeAttemptDue(1_000, 1_100, 10), true);
+  assert.equal(isVlcDecodeAttemptDue(1_000, 1_016, 60), false);
+  assert.equal(isVlcDecodeAttemptDue(1_000, 1_017, 60), true);
+  assert.equal(isVlcDecodeAttemptDue(1_000, 2_000, 0), false);
+});
+
+test("live VLC router uses the selected modulation", async () => {
+  const payload = new Uint8Array([FrameType.Sequential, 0, 0, 0, 0]);
+  const scheduler = new OpticalFrameScheduler({
+    transport: TransportId.VLC, vlcModulation: "csk8", ofdmModulation: "bpsk", ofdmGridSize: 8,
+  });
+  const router = new LiveReceiverRouter({
+    transport: TransportId.VLC, vlcModulation: "csk8", ofdmModulation: "bpsk", ofdmGridSize: 8,
+  });
+  scheduler.beginFrame(payload);
+  const recovered: Uint8Array[] = [];
+  for (let index = 0; index < scheduler.getSnapshot().totalOpticalSymbols; index++) {
+    const representation = createVlcRenderRepresentation(scheduler.getActiveBytes(), {
+      transport: TransportId.VLC, vlcModulation: "csk8", opticalUnitIndex: index,
+      symbolRate: 10, frameSequence: 0,
+    });
+    const result = await router.ingest(solidVlcSample(
+      representation.stream.levels[index], representation.color,
+    ));
+    recovered.push(...result.payloads);
+  }
+  assert.deepEqual(recovered, [payload]);
 });
 
 function solidVlcSample(level: number, color: readonly number[]) {
