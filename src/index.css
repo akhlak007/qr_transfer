@@ -546,7 +546,7 @@ body {
   margin-bottom: 8px;
 }
 
-.form-select, .form-input-range {
+.form-select, .form-input, .form-input-range {
   width: 100%;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border-subtle);
@@ -559,7 +559,7 @@ body {
   box-sizing: border-box;
 }
 
-.form-select:focus {
+.form-select:focus, .form-input:focus {
   border-color: var(--color-accent);
 }
 
@@ -1545,5 +1545,184 @@ body {
   border: 1px solid rgba(245, 158, 11, 0.35);
   color: var(--color-amber);
 }
+
+/* ==========================================================================
+   Mobile & Responsive Adaptations (Phone & Tablet UI)
+   ========================================================================== */
+
+@media (max-width: 768px) {
+  /* Navigation */
+  .ollyo-nav {
+    height: 64px;
+  }
+  .ollyo-nav-inner {
+    padding: 0 16px;
+  }
+  .ollyo-nav-links {
+    display: none;
+  }
+  .ollyo-brand {
+    font-size: 18px;
+  }
+
+  /* Containers & Section Spacing */
+  .ollyo-container {
+    padding: 0 16px;
+  }
+  .ollyo-hero {
+    padding-top: 96px;
+    padding-bottom: 44px;
+  }
+  .ollyo-hero-title {
+    font-size: clamp(32px, 8vw, 48px);
+    letter-spacing: -0.02em;
+  }
+  .ollyo-hero-subtitle {
+    font-size: 16px;
+    margin-bottom: 32px;
+  }
+  .ollyo-hero-actions {
+    flex-direction: column;
+    width: 100%;
+    gap: 12px;
+  }
+  .ollyo-btn-main, .ollyo-btn-sub {
+    width: 100%;
+    padding: 14px 20px;
+    text-align: center;
+    box-sizing: border-box;
+  }
+  .ollyo-section {
+    padding: 56px 0;
+  }
+
+  /* Console & Main Cards */
+  .ollyo-demo-wrapper {
+    padding: 16px 12px;
+    border-radius: 16px;
+  }
+  .card {
+    padding: 16px;
+    border-radius: 14px;
+  }
+  .tabs {
+    max-width: 100%;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .tab-btn {
+    padding: 12px 14px;
+    font-size: 15px;
+  }
+
+  /* Form & Interactive Controls */
+  .form-select, .form-input, .form-input-range, .message-input {
+    font-size: 16px; /* Prevents auto-zoom on iOS */
+    padding: 12px 14px;
+  }
+  .form-input-range::-webkit-slider-thumb {
+    width: 24px;
+    height: 24px;
+  }
+  .controls-row {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .btn {
+    width: 100%;
+    min-height: 48px;
+    font-size: 15px;
+    box-sizing: border-box;
+  }
+
+  /* Canvas / Optical Screen */
+  .canvas-wrapper {
+    padding: 12px;
+    max-width: 100%;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .canvas-wrapper canvas {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+
+  /* Scanner & Video */
+  .scanner-container {
+    max-width: 100%;
+    border-radius: 12px;
+  }
+
+  /* File Info & Stats */
+  .file-info-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .file-name {
+    max-width: 100%;
+  }
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .stat-item {
+    padding: 10px 12px;
+  }
+  .stat-value {
+    font-size: 16px;
+  }
+
+  /* Modals & Dialogs */
+  .recovery-modal-overlay {
+    padding: 10px;
+  }
+  .recovery-modal-card {
+    max-width: 100%;
+    max-height: 92vh;
+  }
+  .recovery-modal-header, .recovery-modal-footer, .recovery-session-list {
+    padding: 14px 16px;
+  }
+  .recovery-session-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .recovery-item-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  /* Footer */
+  .ollyo-footer {
+    padding: 40px 0 30px 0;
+    margin-top: 60px;
+  }
+  .ollyo-footer-inner {
+    flex-direction: column;
+    gap: 24px;
+    text-align: center;
+  }
+  .ollyo-footer-links {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+  .ollyo-pill {
+    font-size: 11px;
+    padding: 4px 12px;
+  }
+  .ollyo-metric-val {
+    font-size: 36px;
+  }
+}
+
 
 
