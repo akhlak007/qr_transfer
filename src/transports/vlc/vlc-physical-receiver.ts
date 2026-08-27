@@ -22,6 +22,7 @@ export class PhysicalVlcReceiver {
   private readonly listeners = new Set<(event: VlcReceiverFrameEvent) => void>();
   private low = 255;
   private high = 0;
+  private calibrated = false;
   private previousLevel: number | null = null;
   private previousAt = 0;
   private lastTransitionAt: number | null = null;
@@ -51,8 +52,21 @@ export class PhysicalVlcReceiver {
 
   ingestSample(luminance: number, capturedAt: number): PhysicalVlcDiagnostics {
     if (!Number.isFinite(luminance) || !Number.isFinite(capturedAt)) return this.getDiagnostics();
-    this.low = Math.min(this.low, luminance);
-    this.high = Math.max(this.high, luminance);
+    if (this.previousLevel !== null && capturedAt - this.previousAt > this.chipPeriodMs * 0.75) {
+      this.resetClock("CLOCK_LOST");
+      this.previousAt = capturedAt;
+      return this.getDiagnostics();
+    }
+    if (!this.calibrated) {
+      this.low = Math.min(this.low, luminance);
+      this.high = Math.max(this.high, luminance);
+      this.calibrated = this.high - this.low >= 20;
+    } else {
+      const threshold = (this.low + this.high) / 2;
+      const alpha = 0.08;
+      if (luminance >= threshold) this.high = this.high * (1 - alpha) + luminance * alpha;
+      else this.low = this.low * (1 - alpha) + luminance * alpha;
+    }
     const range = this.high - this.low;
     if (range < 20) {
       this.state = "SIGNAL_TOO_WEAK";
@@ -125,6 +139,16 @@ export class PhysicalVlcReceiver {
       this.pairsProcessed = [0, 0];
       this.nextCenterAt = null;
     }
+  }
+
+  private resetClock(state: PhysicalVlcState): void {
+    this.state = state;
+    this.previousLevel = null;
+    this.nextCenterAt = null;
+    this.lastTransitionAt = null;
+    this.chips = [];
+    this.pairsProcessed = [0, 0];
+    for (const decoder of this.decoders) decoder.reset();
   }
 
   onFrame(listener: (event: VlcReceiverFrameEvent) => void): () => void {

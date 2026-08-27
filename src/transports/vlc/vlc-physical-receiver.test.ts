@@ -41,6 +41,29 @@ test("physical Manchester VLC tracks two-percent sender clock drift", () => {
   assert.deepEqual(result.recovered, result.payload);
 });
 
+test("physical VLC drops lock instead of inventing chips across a camera stall", () => {
+  const receiver = new PhysicalVlcReceiver(10);
+  receiver.ingestSample(0, 0);
+  receiver.ingestSample(255, 20);
+  receiver.ingestSample(0, 200);
+  assert.equal(receiver.getDiagnostics().state, "CLOCK_LOST");
+  assert.equal(receiver.getDiagnostics().validFramesCount, 0);
+});
+
+test("physical VLC calibration accepts a shifted exposure range", () => {
+  const payload = new Uint8Array([3, 1, 4, 1, 5]);
+  const bytes = encodeVlcFrame({ version: 1, modulation: "ook", seqNumber: 8, payload });
+  const stream = modulateManchesterOok(bytes);
+  const receiver = new PhysicalVlcReceiver(10);
+  let recovered: Uint8Array | null = null;
+  receiver.onFrame((event) => { recovered = event.rawPayload; });
+  for (let time = 0; time < stream.totalSymbols * 100; time += 1000 / 60) {
+    const chip = Math.min(stream.totalSymbols - 1, Math.floor(time / 100));
+    receiver.ingestSample(stream.levels[chip] === 0 ? 140 : 220, time);
+  }
+  assert.deepEqual(recovered, payload);
+});
+
 test("physical VLC acknowledges an unusable camera signal", () => {
   const receiver = new PhysicalVlcReceiver(10);
   for (let index = 0; index < 20; index++) receiver.ingestSample(110, index * 16);

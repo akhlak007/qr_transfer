@@ -1733,9 +1733,9 @@ function App() {
                             style={{ fontSize: "12px" }}
                           >
                             <option value="ook">OOK (On-Off Keying · 1 bit/symbol)</option>
-                            <option value="pam4">4-PAM (Pulse Amplitude Modulation · 2 bits/symbol)</option>
-                            <option value="csk8">CSK-8 (Color-Shift Keying · 3 bits/symbol)</option>
-                            <option value="csk16">CSK-16 (Color-Shift Keying · 4 bits/symbol)</option>
+                            <option value="pam4" disabled>4-PAM (Experimental · software only)</option>
+                            <option value="csk8" disabled>CSK-8 (Experimental · software only)</option>
+                            <option value="csk16" disabled>CSK-16 (Experimental · software only)</option>
                           </select>
                         </div>
 
@@ -2016,11 +2016,11 @@ function App() {
                           disabled={isCameraActive || isReceiverFinalizing}
                         >
                           <option value="ook">OOK</option>
-                          <option value="pam4">4-PAM</option>
-                          <option value="csk8">CSK-8</option>
-                          <option value="csk16">CSK-16</option>
+                          <option value="pam4" disabled>4-PAM (Experimental · software only)</option>
+                          <option value="csk8" disabled>CSK-8 (Experimental · software only)</option>
+                          <option value="csk16" disabled>CSK-16 (Experimental · software only)</option>
                         </select>
-                        <label className="form-label" style={{ marginTop: "12px" }}>Symbol Rate</label>
+                        <label className="form-label" style={{ marginTop: "12px" }}>Manchester Chip Rate</label>
                         <input
                           className="form-input"
                           type="number"
@@ -2031,7 +2031,7 @@ function App() {
                           disabled={isCameraActive || isReceiverFinalizing}
                         />
                         <small style={{ display: "block", marginTop: "8px", color: "var(--text-secondary)" }}>
-                          Match the sender's VLC modulation and symbol rate ({fps} symbols/s) before starting the camera.
+                          Match the sender's VLC chip rate ({fps} chips/s) before starting the camera. OOK carries {fps / 2} logical bits/s.
                         </small>
                       </div>
                     )}
