@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { encodeVlcFrame } from "./vlc-framing";
-import { modulateManchesterOok } from "./vlc-modulator";
+import { modulateManchesterOok, modulateOok } from "./vlc-modulator";
 import { PhysicalVlcReceiver } from "./vlc-physical-receiver";
+import { opticalDiagnosticTrace } from "../../diagnostics/optical-trace";
+import { VlcOokReceiver } from "./vlc-receiver";
 
 function transmitAtCameraFps(cameraFps: number, phaseMs = 0, dropEvery = 0, transmitterChipMs = 100) {
   const payload = Uint8Array.from({ length: 48 }, (_, index) => index * 17 + 3);
@@ -73,4 +75,42 @@ test("physical VLC acknowledges an unusable camera signal", () => {
   const diagnostics = receiver.getDiagnostics();
   assert.equal(diagnostics.state, "SIGNAL_TOO_WEAK");
   assert.match(diagnostics.message, /cannot distinguish light levels/i);
+});
+
+test("diagnostic tracing does not change recovered bytes, CRC, or receiver behavior", () => {
+  const run = (enabled: boolean) => {
+    opticalDiagnosticTrace.clear();
+    opticalDiagnosticTrace.setEnabled(enabled);
+    const result = transmitAtCameraFps(60, 19, 13, 101);
+    return { recovered: result.recovered, crcStatus: result.diagnostics.crcStatus,
+      validFramesCount: result.diagnostics.validFramesCount,
+      corruptFramesCount: result.diagnostics.corruptFramesCount,
+      state: result.diagnostics.state, trace: opticalDiagnosticTrace.snapshot() };
+  };
+  const withoutTrace = run(false);
+  const withTrace = run(true);
+  opticalDiagnosticTrace.setEnabled(false);
+  assert.deepEqual(withTrace.recovered, withoutTrace.recovered);
+  assert.deepEqual(
+    { crcStatus: withTrace.crcStatus, validFramesCount: withTrace.validFramesCount,
+      corruptFramesCount: withTrace.corruptFramesCount, state: withTrace.state },
+    { crcStatus: withoutTrace.crcStatus, validFramesCount: withoutTrace.validFramesCount,
+      corruptFramesCount: withoutTrace.corruptFramesCount, state: withoutTrace.state },
+  );
+  assert.equal(withoutTrace.trace.events.length, 0);
+  assert.ok(withTrace.trace.events.some((event) => event.stage === "PhysicalVlcReceiver"));
+  assert.ok(withTrace.trace.events.some((event) => event.stage === "VlcOokReceiver" && event.event === "crc-pass"));
+});
+
+test("discarded VLC frames record an explicit rejection reason", () => {
+  const bytes = encodeVlcFrame({ version: 1, modulation: "ook", seqNumber: 9, payload: new Uint8Array([1, 2, 3]) });
+  bytes[9] ^= 0x40;
+  opticalDiagnosticTrace.clear();
+  opticalDiagnosticTrace.setEnabled(true);
+  const receiver = new VlcOokReceiver();
+  for (const level of modulateOok(bytes).levels) receiver.ingestLuminanceSample(level);
+  opticalDiagnosticTrace.setEnabled(false);
+  assert.equal(receiver.getDiagnostics().crcStatus, "invalid");
+  const rejection = opticalDiagnosticTrace.snapshot().events.find((event) => event.event === "frame-rejected");
+  assert.equal(rejection?.details.reason, "crc-failed");
 });

@@ -7,6 +7,7 @@ import { modulateManchesterOok, modulateVlcFrame } from "../transports/vlc/vlc-m
 import { VisualOfdmReceiver, type OfdmReceiverGridSize } from "../transports/ofdm/ofdm-receiver";
 import { encodeOfdmFrame, type OfdmModulationScheme } from "../transports/ofdm/ofdm-framing";
 import { modulateOfdmBytes } from "../transports/ofdm/ofdm-modulator";
+import { opticalDiagnosticTrace } from "../diagnostics/optical-trace";
 
 export interface OpticalSchedulingConfig {
   transport: TransportId;
@@ -151,9 +152,13 @@ export class LiveReceiverRouter {
 
   async ingest(source: OpticalCameraSource, capturedAt = performance.now()) {
     const started = performance.now();
+    opticalDiagnosticTrace.record("LiveReceiverRouter", "ingest", {
+      transport: this.config.transport, width: source.width, height: source.height,
+    }, capturedAt);
     if (this.config.transport === TransportId.QR) {
       const observation = await this.qrDecoder(source);
       const payloads = observation.outcome === "decoded" && observation.bytes ? [observation.bytes] : [];
+      opticalDiagnosticTrace.record("LiveReceiverRouter", "dispatch-result", { transport: TransportId.QR, payloadCount: payloads.length });
       return { transport: TransportId.QR, payloads, crcStatus: "not-applicable" as const,
         recoveredFrames: payloads.length, durationMs: performance.now() - started };
     }
@@ -161,9 +166,15 @@ export class LiveReceiverRouter {
       const diagnostics = this.vlcReceiver instanceof PhysicalVlcReceiver
         ? this.vlcReceiver.ingestFrame(source, capturedAt)
         : this.vlcReceiver.ingestFrame(source);
-      return { ...this.drain(TransportId.VLC, diagnostics.crcStatus, diagnostics.validFramesCount, started),
+      const result = { ...this.drain(TransportId.VLC, diagnostics.crcStatus, diagnostics.validFramesCount, started),
         acquisitionState: "state" in diagnostics ? diagnostics.state : undefined,
-        acknowledgement: "message" in diagnostics ? diagnostics.message : undefined };
+        acknowledgement: "message" in diagnostics ? diagnostics.message : undefined,
+        diagnostics };
+      opticalDiagnosticTrace.record("LiveReceiverRouter", "dispatch-result", {
+        transport: TransportId.VLC, payloadCount: result.payloads.length, crcStatus: diagnostics.crcStatus,
+        recoveredFrames: diagnostics.validFramesCount,
+      });
+      return result;
     }
     if (this.config.transport === TransportId.VisualOFDM && this.ofdmReceiver) {
       const diagnostics = this.ofdmReceiver.ingestFrame(source);

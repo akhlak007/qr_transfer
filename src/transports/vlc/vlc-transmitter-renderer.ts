@@ -1,6 +1,7 @@
 import { TransportId } from "../../core/transport";
 import { modulateManchesterOok, modulateVlcFrame } from "./vlc-modulator";
 import type { OpticalRenderer, RendererOptions, RendererResult } from "../rendering/optical-renderer";
+import { opticalDiagnosticTrace } from "../../diagnostics/optical-trace";
 
 export function createVlcRenderRepresentation(bytes: Uint8Array, options: RendererOptions) {
   const modulation = options.vlcModulation ?? "ook";
@@ -36,6 +37,12 @@ export class VlcTransmitterRenderer implements OpticalRenderer {
     ctx.fillStyle = "rgba(255,255,255,.85)";
     ctx.font = "600 14px sans-serif";
     ctx.fillText(`VLC · ${modulation.toUpperCase()} · symbol ${index + 1}/${stream.totalSymbols}`, 16, 24);
+    opticalDiagnosticTrace.record("VlcTransmitter", "chip-rendered", {
+      applicationFrameSequence: options.frameSequence,
+      wireFrameSequence: bytes.length >= 6 ? (bytes[4] << 8) | bytes[5] : null,
+      chipIndex: index, totalChips: stream.totalSymbols, level: stream.levels[index] ?? 0,
+      red: color[0], green: color[1], blue: color[2], configuredChipRate: options.symbolRate,
+    });
     return {
       durationMs: performance.now() - started,
       diagnostics: {

@@ -50,6 +50,8 @@ import { ApplicationReconstructionService, type ReconstructionResult } from "./c
 import { CameraLifecycleController } from "./core/camera-lifecycle-controller";
 import { FinalizationGenerationGuard } from "./core/finalization-generation-guard";
 import { ReceiverSessionController } from "./core/receiver-session-controller";
+import { VlcDiagnosticPanel } from "./components/VlcDiagnosticPanel";
+import { opticalDiagnosticTrace } from "./diagnostics/optical-trace";
 
 
 const PlayIcon = () => (
@@ -695,11 +697,19 @@ function App() {
     // Clear old download/decoding state
     if (!resume) {
       resetReceiverState();
+      if (selectedTransport === TransportId.VLC) opticalDiagnosticTrace.clear();
     }
+    opticalDiagnosticTrace.setEnabled(selectedTransport === TransportId.VLC);
 
     try {
       const lifecycle = getCameraLifecycle();
       await (resume ? lifecycle.reconnect() : lifecycle.start());
+      const cameraSettings = (videoRef.current?.srcObject as MediaStream | null)?.getVideoTracks()[0]?.getSettings?.();
+      opticalDiagnosticTrace.record("PhysicalCameraService", "live-camera-started", {
+        configuredTransport: selectedTransport, configuredChipRate: fps,
+        trackWidth: cameraSettings?.width ?? 0, trackHeight: cameraSettings?.height ?? 0,
+        trackFrameRate: cameraSettings?.frameRate ?? 0,
+      });
 
       if (videoRef.current) {
         receiverSessionControllerRef.current?.setReceiving(true);
@@ -740,6 +750,7 @@ function App() {
 
     setIsCameraActive(false);
     setScanStatus("idle");
+    opticalDiagnosticTrace.record("PhysicalCameraService", "live-camera-stopped", {});
   };
 
   const resetReceiverState = (resetAuthoritative = true) => {
@@ -860,6 +871,12 @@ function App() {
           }
           // Draw video frame to hidden canvas
           ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const capturedAt = performance.now();
+          const captureGapMs = Math.max(0, capturedAt - lastScanTimeRef.current);
+          opticalDiagnosticTrace.record("PhysicalCameraService", "live-frame-captured", {
+            width: canvas.width, height: canvas.height, videoReadyState: video.readyState,
+            captureGapMs, observedLoopFps: captureGapMs > 0 ? 1000 / captureGapMs : 0,
+          }, capturedAt);
           capturedFramesCountRef.current++;
           setRxStats((prev) => ({ ...prev, cameraFramesCaptured: prev.cameraFramesCaptured + 1 }));
 
@@ -870,7 +887,7 @@ function App() {
             ofdmGridSize: ofdmGridSize as 8 | 16 | 32,
           };
 
-          const now = performance.now();
+          const now = capturedAt;
           lastScanTimeRef.current = now;
           scannedFramesCountRef.current++;
           if (now - lastFpsTime >= 1000) {
@@ -891,7 +908,7 @@ function App() {
           });
           liveReceiverRouterRef.current = router;
           const scanResult = await router.ingest(canvas);
-          if (scanResult.transport === TransportId.VLC && "acknowledgement" in scanResult && scanResult.acknowledgement) {
+          if (scanResult.transport === TransportId.VLC && "acknowledgement" in scanResult && typeof scanResult.acknowledgement === "string") {
             setVlcAcknowledgement(scanResult.acknowledgement);
           }
           const decodedCount = scanResult.payloads.length;
@@ -2060,6 +2077,8 @@ function App() {
                         {vlcAcknowledgement}
                       </div>
                     )}
+
+                    {selectedTransport === TransportId.VLC && <VlcDiagnosticPanel active={isCameraActive} />}
 
                     {receivedMeta && (
                       <div style={{ marginBottom: "24px" }}>

@@ -9,6 +9,7 @@ import {
   type FileMetadata,
 } from "../modules/protocol";
 import { sha256Hex } from "./integrity";
+import { opticalDiagnosticTrace } from "../diagnostics/optical-trace";
 
 export type ReconstructionFinalizationState = "idle" | "finalizing" | "complete" | "failed";
 
@@ -83,6 +84,9 @@ export class ApplicationReconstructionService {
     let reset = false;
 
     try {
+      opticalDiagnosticTrace.record("ApplicationReconstructionService", "payload-received", {
+        frameType, payloadLength: payload.length,
+      });
       if (frameType === FrameType.Metadata) {
         const metadata = decodeMetadataFrame(payload);
         this.validateMetadata(metadata);
@@ -143,9 +147,17 @@ export class ApplicationReconstructionService {
       }
     } catch (reason) {
       this.error = reason instanceof Error ? reason.message : String(reason);
+      opticalDiagnosticTrace.record("ApplicationReconstructionService", "payload-rejected", {
+        frameType, payloadLength: payload.length, reason: this.error,
+      });
     }
-
-    return { accepted, duplicate, reset, frameType, snapshot: this.getSnapshot(), finalization: this.finalizationPromise };
+    const snapshot = this.getSnapshot();
+    opticalDiagnosticTrace.record("ApplicationReconstructionService", "ingest-result", {
+      frameType, accepted, duplicate, reset, resolvedBlocks: snapshot.resolvedBlocks,
+      totalBlocks: snapshot.totalBlocks, finalizationState: snapshot.finalizationState,
+      error: snapshot.error,
+    });
+    return { accepted, duplicate, reset, frameType, snapshot, finalization: this.finalizationPromise };
   }
 
   reset(): void {

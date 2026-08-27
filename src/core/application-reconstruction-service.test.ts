@@ -5,6 +5,7 @@ import { FountainEncoder, mulberry32 } from "../modules/fountain";
 import { encodeFountainFrame, encodeMetadataFrame, encodeSequentialFrame } from "../modules/protocol";
 import { sha256, sha256Hex } from "./integrity";
 import { ApplicationReconstructionService } from "./application-reconstruction-service";
+import { opticalDiagnosticTrace } from "../diagnostics/optical-trace";
 
 async function fixture(payload: Uint8Array, blockSize = 8) {
   const blocks = chunkFile(payload, blockSize);
@@ -29,6 +30,28 @@ test("shared reconstruction service completes sequential data with SHA-256", asy
   assert.equal(result.actualSha256, await sha256Hex(payload));
   assert.equal(result.sha256Matched, true);
   assert.equal(service.getSnapshot().finalizationState, "complete");
+});
+
+test("reconstruction diagnostics are observational", async () => {
+  const payload = Uint8Array.from({ length: 12 }, (_, index) => index + 1);
+  const { blocks, metadata } = await fixture(payload, 8);
+  const run = async (enabled: boolean) => {
+    opticalDiagnosticTrace.clear();
+    opticalDiagnosticTrace.setEnabled(enabled);
+    const service = new ApplicationReconstructionService();
+    service.ingest(metadata);
+    service.ingest(encodeSequentialFrame(0, blocks[0]));
+    service.ingest(encodeSequentialFrame(1, blocks[1].subarray(0, 4)));
+    const result = await service.getFinalizationPromise();
+    return { result, snapshot: service.getSnapshot(), trace: opticalDiagnosticTrace.snapshot() };
+  };
+  const disabled = await run(false);
+  const enabled = await run(true);
+  opticalDiagnosticTrace.setEnabled(false);
+  assert.deepEqual(enabled.result, disabled.result);
+  assert.deepEqual(enabled.snapshot, disabled.snapshot);
+  assert.equal(disabled.trace.events.length, 0);
+  assert.ok(enabled.trace.events.some((event) => event.stage === "ApplicationReconstructionService" && event.event === "ingest-result"));
 });
 
 test("shared reconstruction service completes fountain data", async () => {

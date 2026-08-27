@@ -15,6 +15,7 @@
  */
 
 import { CameraDiagnosticsTracker } from "./camera-diagnostics";
+import { opticalDiagnosticTrace } from "../diagnostics/optical-trace";
 
 export type CameraResolutionPreset = "640x480" | "1280x720" | "1920x1080";
 
@@ -162,6 +163,11 @@ export class PhysicalCameraService {
 
     this.tracker.reset();
     this.active = true;
+    const settings = stream.getVideoTracks()[0]?.getSettings?.();
+    opticalDiagnosticTrace.record("PhysicalCameraService", "camera-started", {
+      requestedFps: this.activeConfig.requestedFps, width: settings?.width ?? 0,
+      height: settings?.height ?? 0, actualTrackFps: settings?.frameRate ?? 0,
+    });
     return stream;
   }
 
@@ -193,6 +199,12 @@ export class PhysicalCameraService {
 
     // Track optical metrics across frame
     this.tracker.processFrame(imgData.data, w, h, now);
+    const diagnostics = this.getDiagnostics();
+    opticalDiagnosticTrace.record("PhysicalCameraService", "frame-captured", {
+      width: w, height: h, actualFps: diagnostics.actualFps,
+      droppedFrames: diagnostics.droppedFrames, luminanceMean: diagnostics.luminanceMean,
+      luminanceVariance: diagnostics.luminanceVariance, exposureStable: diagnostics.exposureStable,
+    }, now);
 
     // If a target canvas was passed (e.g. for live inspector/preview), render to it
     if (targetCanvas) {
@@ -256,6 +268,7 @@ export class PhysicalCameraService {
    * Cleanly stop camera stream and release hardware handles.
    */
   public stop(): void {
+    opticalDiagnosticTrace.record("PhysicalCameraService", "camera-stopped", { active: this.active });
     if (this.mediaStream) {
       for (const track of this.mediaStream.getTracks()) {
         try {

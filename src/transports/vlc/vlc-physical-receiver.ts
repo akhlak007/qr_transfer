@@ -1,5 +1,6 @@
 import { VlcOokReceiver, type OpticalSource, type VlcReceiverFrameEvent } from "./vlc-receiver";
 import { extractCenterRoiAverage } from "./vlc-demodulator";
+import { opticalDiagnosticTrace } from "../../diagnostics/optical-trace";
 
 export type PhysicalVlcState = "CALIBRATING" | "SEARCHING_CLOCK" | "SEARCHING_SYNC"
   | "LOCKED_RECEIVING" | "FRAME_DECODED" | "SIGNAL_TOO_WEAK" | "CLOCK_LOST"
@@ -14,6 +15,21 @@ export interface PhysicalVlcDiagnostics {
   validFramesCount: number;
   corruptFramesCount: number;
   crcStatus: string;
+  sampledLuminance: number;
+  lowEstimate: number;
+  highEstimate: number;
+  observationGapMs: number;
+  observations: number;
+  transitions: number;
+  recoveredChips: number;
+  recoveredBits: number;
+  clockResets: number;
+  phaseErrorMs: number;
+  barkerCorrelation: number;
+  syncLocks: number;
+  bufferedFrameBits: number;
+  expectedFrameBits: number | null;
+  lastRejectedReason: string | null;
 }
 
 export class PhysicalVlcReceiver {
@@ -32,6 +48,13 @@ export class PhysicalVlcReceiver {
   private invalidPairs = 0;
   private state: PhysicalVlcState = "CALIBRATING";
   private emittedFrames = 0;
+  private sampledLuminance = 0;
+  private observationGapMs = 0;
+  private observations = 0;
+  private transitions = 0;
+  private recoveredChips = 0;
+  private clockResets = 0;
+  private phaseErrorMs = 0;
 
   constructor(chipRate = 10) {
     if (!Number.isFinite(chipRate) || chipRate <= 0) throw new RangeError("VLC chip rate must be positive");
@@ -39,23 +62,36 @@ export class PhysicalVlcReceiver {
     for (const decoder of this.decoders) decoder.onFrame((event) => {
       this.emittedFrames++;
       this.state = "FRAME_DECODED";
+      opticalDiagnosticTrace.record("PhysicalVlcReceiver", "frame-emitted", {
+        frameSequence: event.frame.seqNumber, payloadLength: event.rawPayload.length,
+      });
       for (const listener of this.listeners) listener(event);
     });
   }
 
   ingestFrame(source: OpticalSource, capturedAt = performance.now()): PhysicalVlcDiagnostics {
     const normalized = this.normalize(source);
-    if (!normalized || !Number.isFinite(capturedAt)) return this.getDiagnostics();
+    if (!normalized || !Number.isFinite(capturedAt)) {
+      opticalDiagnosticTrace.record("PhysicalVlcReceiver", "observation-rejected", { reason: "invalid-camera-source" }, capturedAt);
+      return this.getDiagnostics();
+    }
     const { luminance } = extractCenterRoiAverage(normalized, 0.5);
     return this.ingestSample(luminance, capturedAt);
   }
 
   ingestSample(luminance: number, capturedAt: number): PhysicalVlcDiagnostics {
-    if (!Number.isFinite(luminance) || !Number.isFinite(capturedAt)) return this.getDiagnostics();
+    if (!Number.isFinite(luminance) || !Number.isFinite(capturedAt)) {
+      opticalDiagnosticTrace.record("PhysicalVlcReceiver", "observation-rejected", { reason: "non-finite-luminance-or-timestamp" });
+      return this.getDiagnostics();
+    }
+    const previousState = this.state;
+    this.sampledLuminance = luminance;
+    this.observations++;
+    this.observationGapMs = this.previousLevel === null ? 0 : capturedAt - this.previousAt;
     if (this.previousLevel !== null && capturedAt - this.previousAt > this.chipPeriodMs * 0.75) {
       this.resetClock("CLOCK_LOST");
       this.previousAt = capturedAt;
-      return this.getDiagnostics();
+      return this.traceObservation(capturedAt, previousState);
     }
     this.luminanceWindow.push(luminance);
     if (this.luminanceWindow.length > 30) this.luminanceWindow.shift();
@@ -64,22 +100,24 @@ export class PhysicalVlcReceiver {
     const range = this.high - this.low;
     if (range < 20) {
       this.state = "SIGNAL_TOO_WEAK";
-      return this.getDiagnostics();
+      return this.traceObservation(capturedAt, previousState);
     }
     const level = luminance >= (this.low + this.high) / 2 ? 1 : 0;
     if (this.previousLevel === null) {
       this.previousLevel = level;
       this.previousAt = capturedAt;
       this.state = "SEARCHING_CLOCK";
-      return this.getDiagnostics();
+      return this.traceObservation(capturedAt, previousState);
     }
     if (this.nextCenterAt === null && level !== this.previousLevel) {
+      this.transitions++;
       const boundary = (this.previousAt + capturedAt) / 2;
       this.chips.push(this.previousLevel);
       this.nextCenterAt = boundary + this.chipPeriodMs / 2;
       this.lastTransitionAt = boundary;
       this.state = "SEARCHING_SYNC";
     } else if (this.nextCenterAt !== null && level !== this.previousLevel) {
+      this.transitions++;
       const boundary = (this.previousAt + capturedAt) / 2;
       if (this.lastTransitionAt !== null) {
         const elapsed = boundary - this.lastTransitionAt;
@@ -94,19 +132,21 @@ export class PhysicalVlcReceiver {
         + Math.round((boundary - precedingBoundary) / this.chipPeriodMs) * this.chipPeriodMs;
       const phaseError = Math.max(-this.chipPeriodMs / 4,
         Math.min(this.chipPeriodMs / 4, boundary - nearestBoundary));
+      this.phaseErrorMs = phaseError;
       this.nextCenterAt += phaseError * 0.25;
       this.lastTransitionAt = boundary;
     }
     if (this.nextCenterAt !== null) {
       while (capturedAt >= this.nextCenterAt) {
         this.chips.push(level);
+        this.recoveredChips++;
         this.nextCenterAt += this.chipPeriodMs;
       }
       this.decodeAvailablePairs();
     }
     this.previousLevel = level;
     this.previousAt = capturedAt;
-    return this.getDiagnostics();
+    return this.traceObservation(capturedAt, previousState);
   }
 
   private decodeAvailablePairs(): void {
@@ -142,7 +182,22 @@ export class PhysicalVlcReceiver {
     this.lastTransitionAt = null;
     this.chips = [];
     this.pairsProcessed = [0, 0];
+    this.clockResets++;
     for (const decoder of this.decoders) decoder.reset();
+  }
+
+  private traceObservation(capturedAt: number, previousState: PhysicalVlcState): PhysicalVlcDiagnostics {
+    const diagnostics = this.getDiagnostics();
+    opticalDiagnosticTrace.record("PhysicalVlcReceiver", "camera-observation", {
+      luminance: diagnostics.sampledLuminance, low: diagnostics.lowEstimate, high: diagnostics.highEstimate,
+      dynamicRange: diagnostics.dynamicRange, gapMs: diagnostics.observationGapMs,
+      state: diagnostics.state, previousState, transitions: diagnostics.transitions,
+      recoveredChips: diagnostics.recoveredChips, recoveredBits: diagnostics.recoveredBits,
+      phaseErrorMs: diagnostics.phaseErrorMs, invalidManchesterPairs: diagnostics.invalidManchesterPairs,
+      barkerCorrelation: diagnostics.barkerCorrelation, syncLocks: diagnostics.syncLocks,
+      bufferedFrameBits: diagnostics.bufferedFrameBits, expectedFrameBits: diagnostics.expectedFrameBits,
+    }, capturedAt);
+    return diagnostics;
   }
 
   onFrame(listener: (event: VlcReceiverFrameEvent) => void): () => void {
@@ -168,7 +223,13 @@ export class PhysicalVlcReceiver {
     return { state: this.state, message: messages[this.state], dynamicRange,
       chipRate: 1000 / this.chipPeriodMs, invalidManchesterPairs: this.invalidPairs,
       validFramesCount: this.emittedFrames, corruptFramesCount: decoder.corruptFramesCount,
-      crcStatus: decoder.crcStatus };
+      crcStatus: decoder.crcStatus, sampledLuminance: this.sampledLuminance,
+      lowEstimate: this.low, highEstimate: this.high, observationGapMs: this.observationGapMs,
+      observations: this.observations, transitions: this.transitions, recoveredChips: this.recoveredChips,
+      recoveredBits: decoder.totalBitsRecovered, clockResets: this.clockResets,
+      phaseErrorMs: this.phaseErrorMs, barkerCorrelation: decoder.bestBarkerCorrelation,
+      syncLocks: decoder.syncLocksAcquired, bufferedFrameBits: decoder.bufferedFrameBits,
+      expectedFrameBits: decoder.expectedFrameBits, lastRejectedReason: decoder.lastRejectedReason };
   }
 
   private normalize(source: OpticalSource) {

@@ -19,6 +19,7 @@ import {
   type VlcReceiverModulation,
   type VlcSymbolDecoder,
 } from "./vlc-symbol-decoders";
+import { opticalDiagnosticTrace } from "../../diagnostics/optical-trace";
 
 export type { VlcReceiverModulation } from "./vlc-symbol-decoders";
 
@@ -70,6 +71,14 @@ export interface VlcReceiverDiagnostics {
   fountainSymbolsAccepted: number;
   fountainBlocksResolved: number;
   isFountainComplete: boolean;
+  bestBarkerCorrelation: number;
+  syncSearchBits: number;
+  bufferedFrameBits: number;
+  expectedFrameBits: number | null;
+  headerCandidates: number;
+  crcPasses: number;
+  crcFailures: number;
+  lastRejectedReason: string | null;
 }
 
 export interface VlcReceiverFrameEvent {
@@ -123,6 +132,12 @@ export class VlcReceiver {
   private reconstructedPayload: Uint8Array | null = null;
   private cachedSha256: string | null = null;
   private frameListeners = new Set<VlcFrameCallback>();
+  private bestBarkerCorrelation = 0;
+  private expectedFrameBits: number | null = null;
+  private headerCandidates = 0;
+  private crcPasses = 0;
+  private crcFailures = 0;
+  private lastRejectedReason: string | null = null;
 
   constructor(config: Partial<VlcReceiverConfig> & Pick<VlcReceiverConfig, "modulation">) {
     this.config = { ...DEFAULT_VLC_RECEIVER_CONFIG, ...config };
@@ -157,6 +172,10 @@ export class VlcReceiver {
       this.recentSymbols.push(decision.symbol);
       if (this.recentSymbols.length > 32) this.recentSymbols.shift();
       this.appendRecoveredBits(decision.bits);
+      opticalDiagnosticTrace.record("VlcOokReceiver", "symbol-decision", {
+        symbol: decision.symbol, bits: decision.bits, bufferedFrameBits: this.bitBuffer.length,
+        errorEstimate: decision.errorEstimate,
+      });
       this.processFrameBits();
     }
     return this.getDiagnostics();
@@ -168,12 +187,19 @@ export class VlcReceiver {
     this.syncSearchBits.push(bit);
     if (this.syncSearchBits.length > BARKER_11_BITS.length * 4) this.syncSearchBits.shift();
     const syncIndex = this.findSyncIndex(this.syncSearchBits, this.config.barkerSyncThreshold);
+    opticalDiagnosticTrace.record("VlcOokReceiver", "preamble-search", {
+      correlation: this.bestBarkerCorrelation, searchBits: this.syncSearchBits.length,
+      locked: syncIndex >= 0,
+    });
     if (syncIndex < 0) return;
     this.symbolTimingLock = true;
     this.receivingFrame = true;
     this.syncLocksAcquired++;
     this.state = "LOCKED_RECEIVING";
     this.crcStatus = "pending";
+    opticalDiagnosticTrace.record("VlcOokReceiver", "synchronization-lock", {
+      syncLocks: this.syncLocksAcquired, correlation: this.bestBarkerCorrelation,
+    });
     this.syncSearchBits = [];
     this.bitBuffer = [];
   }
@@ -193,7 +219,9 @@ export class VlcReceiver {
   private processFrameBits(): void {
     if (this.bitBuffer.length < 64) return;
     const header = this.extractBytesFromBits(this.bitBuffer, 0, 8);
+    this.headerCandidates++;
     if (header[0] !== 0x56 || header[1] !== 0x4c || header[2] !== 1) {
+      this.rejectFrame("invalid-magic-or-version", false, { header: Array.from(header) });
       this.loseLock(false);
       return;
     }
@@ -201,11 +229,16 @@ export class VlcReceiver {
     const payloadLength = (header[6] << 8) | header[7];
     const totalFrameBytes = 8 + payloadLength + 2;
     const totalFrameBits = totalFrameBytes * 8;
+    this.expectedFrameBits = totalFrameBits;
+    opticalDiagnosticTrace.record("VlcOokReceiver", "frame-length-detected", {
+      payloadLength, totalFrameBits, bufferedFrameBits: this.bitBuffer.length,
+    });
     this.lastFrameSequence = (header[4] << 8) | header[5];
     if (totalFrameBits > this.config.maxBitBufferSize) {
       this.totalFramesDecoded++;
       this.crcStatus = "invalid";
       this.corruptFramesCount++;
+      this.rejectFrame("advertised-frame-exceeds-buffer", true, { totalFrameBits, maxBitBufferSize: this.config.maxBitBufferSize });
       this.loseLock(true);
       return;
     }
@@ -216,15 +249,23 @@ export class VlcReceiver {
     const matchesConfiguredModulation = decodedFrame?.modulation === framingModulation(this.config.modulation);
     if (decodedFrame?.isValidCrc && matchesConfiguredModulation) {
       this.crcStatus = "valid";
+      this.crcPasses++;
       this.validFramesCount++;
       this.lastFrameSequence = decodedFrame.seqNumber;
       this.state = "FRAME_DECODED";
       this.handleDecodedFrame(decodedFrame);
+      opticalDiagnosticTrace.record("VlcOokReceiver", "crc-pass", {
+        frameSequence: decodedFrame.seqNumber, payloadLength: decodedFrame.payload.length, crcPasses: this.crcPasses,
+      });
       this.loseLock(true);
       this.symbolTimingLock = true;
     } else {
       this.crcStatus = "invalid";
+      this.crcFailures++;
       this.corruptFramesCount++;
+      this.rejectFrame(decodedFrame?.isValidCrc ? "configured-modulation-mismatch" : "crc-failed", true, {
+        frameSequence: decodedFrame?.seqNumber ?? null, crcFailures: this.crcFailures,
+      });
       this.loseLock(true);
     }
   }
@@ -233,6 +274,7 @@ export class VlcReceiver {
     this.receivingFrame = false;
     this.symbolTimingLock = false;
     this.bitBuffer = [];
+    this.expectedFrameBits = null;
     this.syncSearchBits = [];
     if (!preserveCrc) this.crcStatus = "pending";
   }
@@ -349,12 +391,18 @@ export class VlcReceiver {
         if (bits[index + offset] === BARKER_11_BITS[offset]) matches++;
       }
       const score = matches / BARKER_11_BITS.length;
+      this.bestBarkerCorrelation = Math.max(this.bestBarkerCorrelation, score);
       if (score >= minimumCorrelation && score > bestScore) {
         bestIndex = index;
         bestScore = score;
       }
     }
     return bestIndex;
+  }
+
+  private rejectFrame(reason: string, preserveCrc: boolean, details: Record<string, string | number | boolean | null | number[]>): void {
+    this.lastRejectedReason = reason;
+    opticalDiagnosticTrace.record("VlcOokReceiver", "frame-rejected", { reason, preserveCrc, ...details });
   }
 
   private normalizeSourceToBuffer(
@@ -418,6 +466,14 @@ export class VlcReceiver {
       fountainSymbolsAccepted: this.fountainDecoder?.totalProcessedSymbols ?? 0,
       fountainBlocksResolved: this.fountainDecoder?.getResolvedCount() ?? this.sequentialBlocks.size,
       isFountainComplete: this.isReconstructionComplete(),
+      bestBarkerCorrelation: this.bestBarkerCorrelation,
+      syncSearchBits: this.syncSearchBits.length,
+      bufferedFrameBits: this.bitBuffer.length,
+      expectedFrameBits: this.expectedFrameBits,
+      headerCandidates: this.headerCandidates,
+      crcPasses: this.crcPasses,
+      crcFailures: this.crcFailures,
+      lastRejectedReason: this.lastRejectedReason,
     };
   }
 
@@ -463,6 +519,12 @@ export class VlcReceiver {
     this.validFramesCount = 0;
     this.corruptFramesCount = 0;
     this.syncLocksAcquired = 0;
+    this.bestBarkerCorrelation = 0;
+    this.expectedFrameBits = null;
+    this.headerCandidates = 0;
+    this.crcPasses = 0;
+    this.crcFailures = 0;
+    this.lastRejectedReason = null;
     this.metadata = null;
     this.fountainDecoder = null;
     this.fountainBlockSize = 0;
