@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isVlcDecodeAttemptDue, LiveReceiverRouter, OpticalFrameScheduler } from "./application-optical-pipeline";
+import { LiveReceiverRouter, OpticalFrameScheduler } from "./application-optical-pipeline";
 import { TransportId } from "./transport";
 import { decodeVlcFrame, VLC_MAGIC } from "../transports/vlc/vlc-framing";
 import { createVlcRenderRepresentation } from "../transports/vlc/vlc-transmitter-renderer";
@@ -66,14 +66,6 @@ test("unknown live receiver transport fails explicitly", () => {
   }), /Unsupported live receiver transport/);
 });
 
-test("VLC camera frames are sampled at the configured symbol rate", () => {
-  assert.equal(isVlcDecodeAttemptDue(1_000, 1_099, 10), false);
-  assert.equal(isVlcDecodeAttemptDue(1_000, 1_100, 10), true);
-  assert.equal(isVlcDecodeAttemptDue(1_000, 1_016, 60), false);
-  assert.equal(isVlcDecodeAttemptDue(1_000, 1_017, 60), true);
-  assert.equal(isVlcDecodeAttemptDue(1_000, 2_000, 0), false);
-});
-
 test("live VLC router uses the selected modulation", async () => {
   const payload = new Uint8Array([FrameType.Sequential, 0, 0, 0, 0]);
   const scheduler = new OpticalFrameScheduler({
@@ -135,12 +127,12 @@ async function verifyRecoveredFountainPayload(frames: Uint8Array[], expected: Ui
   assert.equal(await sha256Hex(reconstructed), await sha256Hex(expected));
 }
 
-test("composed live VLC path frames once, validates CRC, and reconstructs fountain payload", async () => {
+test("composed live CSK8 path frames once, validates CRC, and reconstructs fountain payload", async () => {
   const expected = Uint8Array.from({ length: 12 }, (_, index) => index * 13 + 3);
   const scheduler = new OpticalFrameScheduler({
-    transport: TransportId.VLC, vlcModulation: "ook", ofdmModulation: "bpsk", ofdmGridSize: 8,
+    transport: TransportId.VLC, vlcModulation: "csk8", ofdmModulation: "bpsk", ofdmGridSize: 8,
   });
-  const router = new LiveReceiverRouter({ transport: TransportId.VLC, ofdmModulation: "bpsk", ofdmGridSize: 8 });
+  const router = new LiveReceiverRouter({ transport: TransportId.VLC, vlcModulation: "csk8", ofdmModulation: "bpsk", ofdmGridSize: 8 });
   const recovered: Uint8Array[] = [];
   for (const applicationFrame of await applicationFountainFrames(expected)) {
     scheduler.beginFrame(applicationFrame);
@@ -152,7 +144,7 @@ test("composed live VLC path frames once, validates CRC, and reconstructs founta
     const totalSymbols = scheduler.getSnapshot().totalOpticalSymbols;
     for (let index = 0; index < totalSymbols; index++) {
       const representation = createVlcRenderRepresentation(framed, {
-        transport: TransportId.VLC, vlcModulation: "ook", opticalUnitIndex: index,
+        transport: TransportId.VLC, vlcModulation: "csk8", opticalUnitIndex: index,
         symbolRate: 1, frameSequence: scheduler.getSnapshot().applicationFrameSequence,
       });
       const result = await router.ingest(solidVlcSample(

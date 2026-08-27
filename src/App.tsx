@@ -45,7 +45,7 @@ import { QRTransmitterRenderer } from "./transports/qr/qr-transmitter-renderer";
 import { VlcTransmitterRenderer } from "./transports/vlc/vlc-transmitter-renderer";
 import { VisualOfdmTransmitterRenderer } from "./transports/ofdm/visual-ofdm-transmitter-renderer";
 import { ProtocolRendererDiagnostics } from "./components/ProtocolRendererDiagnostics";
-import { isVlcDecodeAttemptDue, LiveReceiverRouter, OpticalFrameScheduler } from "./core/application-optical-pipeline";
+import { LiveReceiverRouter, OpticalFrameScheduler } from "./core/application-optical-pipeline";
 import { ApplicationReconstructionService, type ReconstructionResult } from "./core/application-reconstruction-service";
 import { CameraLifecycleController } from "./core/camera-lifecycle-controller";
 import { FinalizationGenerationGuard } from "./core/finalization-generation-guard";
@@ -627,6 +627,7 @@ function App() {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isReceiverFinalizing, setIsReceiverFinalizing] = useState(false);
   const [scanStatus, setScanStatus] = useState<"idle" | "listening" | "receiving" | "success" | "failed" | "reconnecting">("idle");
+  const [vlcAcknowledgement, setVlcAcknowledgement] = useState<string | null>(null);
   const [receivedMeta, setReceivedMeta] = useState<FileMetadata | null>(null);
   const receivedMetaRef = useRef<FileMetadata | null>(null);
 
@@ -764,6 +765,7 @@ function App() {
     seqBlocksMapRef.current.clear();
     fountainDecoderRef.current = null;
     setReceivedMeta(null);
+    setVlcAcknowledgement(null);
     receivedMetaRef.current = null;
     setResolvedBlocksCount(0);
     setRxStats({
@@ -868,12 +870,7 @@ function App() {
             ofdmGridSize: ofdmGridSize as 8 | 16 | 32,
           };
 
-          // Decode VLC once per transmitted symbol instead of once per camera frame.
           const now = performance.now();
-          if (configured.transport === TransportId.VLC
-            && !isVlcDecodeAttemptDue(lastScanTimeRef.current, now, fps)) {
-            return;
-          }
           lastScanTimeRef.current = now;
           scannedFramesCountRef.current++;
           if (now - lastFpsTime >= 1000) {
@@ -888,11 +885,15 @@ function App() {
           const router = liveReceiverRouterRef.current ?? new LiveReceiverRouter({
             transport: configured.transport,
             vlcModulation: configured.vlcModulation,
+            vlcChipRate: fps,
             ofdmModulation: configured.ofdmModulation,
             ofdmGridSize: configured.ofdmGridSize,
           });
           liveReceiverRouterRef.current = router;
           const scanResult = await router.ingest(canvas);
+          if (scanResult.transport === TransportId.VLC && "acknowledgement" in scanResult && scanResult.acknowledgement) {
+            setVlcAcknowledgement(scanResult.acknowledgement);
+          }
           const decodedCount = scanResult.payloads.length;
           const corrupt = scanResult.crcStatus === "failed" || scanResult.crcStatus === "invalid";
 
@@ -2045,6 +2046,16 @@ function App() {
                         </span>
                       )}
                     </div>
+
+                    {selectedTransport === TransportId.VLC && vlcAcknowledgement && (
+                      <div role="status" aria-live="polite" style={{
+                        marginBottom: "16px", padding: "12px", borderRadius: "8px",
+                        border: "1px solid rgba(34, 211, 238, .35)", color: "#a5f3fc",
+                        background: "rgba(8, 145, 178, .12)",
+                      }}>
+                        {vlcAcknowledgement}
+                      </div>
+                    )}
 
                     {receivedMeta && (
                       <div style={{ marginBottom: "24px" }}>

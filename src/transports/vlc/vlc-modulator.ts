@@ -111,6 +111,31 @@ export function modulateOok(frameBytes: Uint8Array): VlcModulatedStream {
   };
 }
 
+/** Physical OOK line coding: every logical bit has a mid-bit transition. */
+export function modulateManchesterOok(frameBytes: Uint8Array): VlcModulatedStream {
+  const logical = modulateOok(frameBytes);
+  const calibrationChips = 16;
+  const totalSymbols = calibrationChips + logical.totalSymbols * 2;
+  const levels = new Uint8Array(totalSymbols);
+  const colors: RGBColor[] = new Array(totalSymbols);
+  for (let chip = 0; chip < calibrationChips; chip++) {
+    const level = chip % 2 === 0 ? 0 : 255;
+    levels[chip] = level;
+    colors[chip] = [level, level, level];
+  }
+  for (let bit = 0; bit < logical.totalSymbols; bit++) {
+    const one = logical.levels[bit] >= 128;
+    const first = one ? 255 : 0;
+    const second = one ? 0 : 255;
+    const offset = calibrationChips + bit * 2;
+    levels[offset] = first;
+    levels[offset + 1] = second;
+    colors[offset] = [first, first, first];
+    colors[offset + 1] = [second, second, second];
+  }
+  return { modulation: "ook", preambleLength: calibrationChips + logical.preambleLength * 2, totalSymbols, levels, colors };
+}
+
 /**
  * Modulate raw bytes using 4-PAM (2 bits/symbol).
  */

@@ -1,10 +1,10 @@
 import { TransportId } from "../../core/transport";
-import { modulateVlcFrame } from "./vlc-modulator";
+import { modulateManchesterOok, modulateVlcFrame } from "./vlc-modulator";
 import type { OpticalRenderer, RendererOptions, RendererResult } from "../rendering/optical-renderer";
 
 export function createVlcRenderRepresentation(bytes: Uint8Array, options: RendererOptions) {
   const modulation = options.vlcModulation ?? "ook";
-  const stream = modulateVlcFrame(bytes, modulation);
+  const stream = modulation === "ook" ? modulateManchesterOok(bytes) : modulateVlcFrame(bytes, modulation);
   const index = (options.opticalUnitIndex ?? 0) % stream.totalSymbols;
   return { modulation, stream, index, color: stream.colors[index] ?? [0, 0, 0] };
 }

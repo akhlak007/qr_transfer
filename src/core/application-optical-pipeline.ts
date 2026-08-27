@@ -1,8 +1,9 @@
 import { TransportId, type OpticalDecodeObservation } from "./transport";
 import { scanQRCode } from "../modules/qr-scan";
 import { VlcReceiver, type VlcReceiverModulation } from "../transports/vlc/vlc-receiver";
+import { PhysicalVlcReceiver } from "../transports/vlc/vlc-physical-receiver";
 import { encodeVlcFrame, type VlcModulationScheme } from "../transports/vlc/vlc-framing";
-import { modulateVlcFrame } from "../transports/vlc/vlc-modulator";
+import { modulateManchesterOok, modulateVlcFrame } from "../transports/vlc/vlc-modulator";
 import { VisualOfdmReceiver, type OfdmReceiverGridSize } from "../transports/ofdm/ofdm-receiver";
 import { encodeOfdmFrame, type OfdmModulationScheme } from "../transports/ofdm/ofdm-framing";
 import { modulateOfdmBytes } from "../transports/ofdm/ofdm-modulator";
@@ -60,7 +61,9 @@ export class OpticalFrameScheduler {
     this.opticalSymbolIndex = 0;
     this.opticalGridIndex = 0;
     this.totalOpticalSymbols = this.config.transport === TransportId.VLC
-      ? modulateVlcFrame(framedBytes, this.config.vlcModulation).totalSymbols : 0;
+      ? (this.config.vlcModulation === "ook"
+        ? modulateManchesterOok(framedBytes)
+        : modulateVlcFrame(framedBytes, this.config.vlcModulation)).totalSymbols : 0;
     this.totalOpticalGrids = this.config.transport === TransportId.VisualOFDM
       ? modulateOfdmBytes(framedBytes, this.config.ofdmModulation, this.config.ofdmGridSize).length : 0;
   }
@@ -112,6 +115,7 @@ type QrDecoder = (source: OpticalCameraSource) => Promise<OpticalDecodeObservati
 export interface LiveReceiverConfiguration {
   transport: TransportId;
   vlcModulation?: VlcModulationScheme;
+  vlcChipRate?: number;
   ofdmModulation: OfdmModulationScheme;
   ofdmGridSize: OfdmReceiverGridSize;
 }
@@ -119,7 +123,7 @@ export interface LiveReceiverConfiguration {
 export class LiveReceiverRouter {
   private readonly config: LiveReceiverConfiguration;
   private readonly qrDecoder: QrDecoder;
-  private readonly vlcReceiver: VlcReceiver | null;
+  private readonly vlcReceiver: VlcReceiver | PhysicalVlcReceiver | null;
   private readonly ofdmReceiver: VisualOfdmReceiver | null;
   private readonly payloadQueue: Uint8Array[] = [];
 
@@ -136,14 +140,16 @@ export class LiveReceiverRouter {
       ? "4pam"
       : config.vlcModulation ?? "ook";
     this.vlcReceiver = config.transport === TransportId.VLC
-      ? new VlcReceiver({ modulation: vlcModulation }) : null;
+      ? (vlcModulation === "ook"
+        ? new PhysicalVlcReceiver(config.vlcChipRate ?? 10)
+        : new VlcReceiver({ modulation: vlcModulation })) : null;
     this.ofdmReceiver = config.transport === TransportId.VisualOFDM
       ? new VisualOfdmReceiver({ modulation: config.ofdmModulation, gridSize: config.ofdmGridSize }) : null;
     this.vlcReceiver?.onFrame((event) => { this.payloadQueue.push(event.rawPayload); });
     this.ofdmReceiver?.onFrame((event) => { this.payloadQueue.push(event.rawPayload); });
   }
 
-  async ingest(source: OpticalCameraSource) {
+  async ingest(source: OpticalCameraSource, capturedAt = performance.now()) {
     const started = performance.now();
     if (this.config.transport === TransportId.QR) {
       const observation = await this.qrDecoder(source);
@@ -152,8 +158,12 @@ export class LiveReceiverRouter {
         recoveredFrames: payloads.length, durationMs: performance.now() - started };
     }
     if (this.config.transport === TransportId.VLC && this.vlcReceiver) {
-      const diagnostics = this.vlcReceiver.ingestFrame(source);
-      return this.drain(TransportId.VLC, diagnostics.crcStatus, diagnostics.validFramesCount, started);
+      const diagnostics = this.vlcReceiver instanceof PhysicalVlcReceiver
+        ? this.vlcReceiver.ingestFrame(source, capturedAt)
+        : this.vlcReceiver.ingestFrame(source);
+      return { ...this.drain(TransportId.VLC, diagnostics.crcStatus, diagnostics.validFramesCount, started),
+        acquisitionState: "state" in diagnostics ? diagnostics.state : undefined,
+        acknowledgement: "message" in diagnostics ? diagnostics.message : undefined };
     }
     if (this.config.transport === TransportId.VisualOFDM && this.ofdmReceiver) {
       const diagnostics = this.ofdmReceiver.ingestFrame(source);
@@ -166,8 +176,4 @@ export class LiveReceiverRouter {
     return { transport, payloads: this.payloadQueue.splice(0), crcStatus, recoveredFrames,
       durationMs: performance.now() - started };
   }
-}
-
-export function isVlcDecodeAttemptDue(lastAttemptAt: number, now: number, symbolRate: number): boolean {
-  return Number.isFinite(symbolRate) && symbolRate > 0 && now - lastAttemptAt >= 1000 / symbolRate;
 }

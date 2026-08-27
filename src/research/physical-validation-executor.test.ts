@@ -23,7 +23,7 @@ import {
   type FileMetadata,
 } from "../modules/protocol";
 import { encodeVlcFrame } from "../transports/vlc/vlc-framing";
-import { modulateVlcFrame } from "../transports/vlc/vlc-modulator";
+import { modulateManchesterOok } from "../transports/vlc/vlc-modulator";
 
 function createMockOpticalFrame(
   width: number,
@@ -292,6 +292,7 @@ describe("Phase 12: Physical Optical Validation Execution", () => {
     };
 
     let seqCounter = 0;
+    let capturedAt = 0;
     const transmitPayload = async (payload: Uint8Array) => {
       const vlcFrame = encodeVlcFrame({
         version: 1,
@@ -299,10 +300,13 @@ describe("Phase 12: Physical Optical Validation Execution", () => {
         seqNumber: seqCounter++,
         payload,
       });
-      const stream = modulateVlcFrame(vlcFrame, "ook");
+      const stream = modulateManchesterOok(vlcFrame);
       for (let i = 0; i < stream.totalSymbols; i++) {
         const frame = createMockOpticalFrame(32, 24, stream.levels[i], 20);
-        await session.ingestFrame(frame as any);
+        for (let sample = 0; sample < 6; sample++) {
+          await session.ingestFrame(frame as any, capturedAt);
+          capturedAt += 1000 / 60;
+        }
       }
     };
 

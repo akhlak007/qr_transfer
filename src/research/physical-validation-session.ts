@@ -220,7 +220,7 @@ export class PhysicalValidationSession {
    * Ingest an optical camera frame (ImageData or Canvas) into the pipeline.
    * Can be called directly by mocked camera frames during testing.
    */
-  async ingestFrame(source: OpticalCameraSource): Promise<PhysicalValidationTelemetry> {
+  async ingestFrame(source: OpticalCameraSource, capturedAt = performance.now()): Promise<PhysicalValidationTelemetry> {
     if (this.state !== "capturing" && this.state !== "preparing") {
       return this.getTelemetry();
     }
@@ -229,7 +229,7 @@ export class PhysicalValidationSession {
 
     try {
       // 1. Route frame through LiveReceiverRouter
-      const routingResult = await this.router.ingest(source);
+      const routingResult = await this.router.ingest(source, capturedAt);
       if (routingResult.crcStatus === "valid") {
         this.crcStatus = "valid";
         this.symbolLockAcquired = true;
