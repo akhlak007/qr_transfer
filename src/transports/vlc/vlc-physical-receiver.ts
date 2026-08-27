@@ -194,6 +194,7 @@ export class PhysicalVlcReceiver {
       dynamicRange: diagnostics.dynamicRange, gapMs: diagnostics.observationGapMs,
       state: diagnostics.state, previousState, transitions: diagnostics.transitions,
       recoveredChips: diagnostics.recoveredChips, recoveredBits: diagnostics.recoveredBits,
+      clockResets: diagnostics.clockResets,
       phaseErrorMs: diagnostics.phaseErrorMs, invalidManchesterPairs: diagnostics.invalidManchesterPairs,
       barkerCorrelation: diagnostics.barkerCorrelation, syncLocks: diagnostics.syncLocks,
       bufferedFrameBits: diagnostics.bufferedFrameBits, expectedFrameBits: diagnostics.expectedFrameBits,

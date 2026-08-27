@@ -752,6 +752,7 @@ function App() {
     setIsCameraActive(false);
     setScanStatus("idle");
     opticalDiagnosticTrace.record("PhysicalCameraService", "live-camera-stopped", {});
+    opticalDiagnosticTrace.setEnabled(false);
   };
 
   const resetReceiverState = (resetAuthoritative = true) => {
