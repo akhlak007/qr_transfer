@@ -151,6 +151,11 @@ export class PhysicalVlcReceiver {
   }
 
   private decodeAvailablePairs(): void {
+    let anyPhaseLocked = false;
+    let anyPhaseReceived = false;
+    let anyPhaseCrcFailed = false;
+    let anyPhaseInvalid = false;
+
     for (let phase = 0; phase < 2; phase++) {
       while (phase + this.pairsProcessed[phase] * 2 + 1 < this.chips.length) {
         const index = phase + this.pairsProcessed[phase] * 2;
@@ -159,13 +164,27 @@ export class PhysicalVlcReceiver {
         this.pairsProcessed[phase]++;
         if (first === second) {
           this.invalidPairs++;
-          this.state = "INVALID_MANCHESTER";
+          anyPhaseInvalid = true;
           continue;
         }
         const bit = first === 1 && second === 0 ? 1 : 0;
         const diagnostics = this.decoders[phase].ingestLuminanceSample(bit ? 255 : 0);
-        if (diagnostics.state === "LOCKED_RECEIVING") this.state = "LOCKED_RECEIVING";
-        if (diagnostics.crcStatus === "invalid") this.state = "CRC_FAILED";
+        if (diagnostics.state === "LOCKED_RECEIVING" || diagnostics.state === "FRAME_DECODED") {
+          anyPhaseLocked = true;
+        }
+        if (diagnostics.crcStatus === "invalid") anyPhaseCrcFailed = true;
+        anyPhaseReceived = true;
+      }
+    }
+    if (this.state !== "FRAME_DECODED") {
+      if (anyPhaseLocked) {
+        this.state = "LOCKED_RECEIVING";
+      } else if (anyPhaseCrcFailed) {
+        this.state = "CRC_FAILED";
+      } else if (anyPhaseReceived) {
+        this.state = "SEARCHING_SYNC";
+      } else if (anyPhaseInvalid && this.state !== "SEARCHING_SYNC" && this.state !== "LOCKED_RECEIVING") {
+        this.state = "INVALID_MANCHESTER";
       }
     }
     if (this.chips.length > 16_384) {
