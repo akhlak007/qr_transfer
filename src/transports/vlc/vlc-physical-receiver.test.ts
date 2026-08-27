@@ -57,8 +57,11 @@ test("physical VLC calibration accepts a shifted exposure range", () => {
   const receiver = new PhysicalVlcReceiver(10);
   let recovered: Uint8Array | null = null;
   receiver.onFrame((event) => { recovered = event.rawPayload; });
-  for (let time = 0; time < stream.totalSymbols * 100; time += 1000 / 60) {
-    const chip = Math.min(stream.totalSymbols - 1, Math.floor(time / 100));
+  let time = 0;
+  for (; time < 1000; time += 1000 / 60) receiver.ingestSample(Math.floor(time / 100) % 2 ? 255 : 0, time);
+  const shiftedAt = time;
+  for (; time < shiftedAt + stream.totalSymbols * 100; time += 1000 / 60) {
+    const chip = Math.min(stream.totalSymbols - 1, Math.floor((time - shiftedAt) / 100));
     receiver.ingestSample(stream.levels[chip] === 0 ? 140 : 220, time);
   }
   assert.deepEqual(recovered, payload);

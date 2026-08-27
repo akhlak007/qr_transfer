@@ -1834,8 +1834,12 @@ function App() {
 
                     <div className="form-group">
                       <div className="range-val-container">
-                        <label className="form-label">Display Frame Rate (FPS)</label>
-                        <span className="range-val">{fps} FPS</span>
+                        <label className="form-label">
+                          {selectedTransport === TransportId.VLC ? "Manchester Chip Rate" : "Display Frame Rate (FPS)"}
+                        </label>
+                        <span className="range-val">
+                          {fps} {selectedTransport === TransportId.VLC ? "chips/s" : "FPS"}
+                        </span>
                       </div>
                       <input
                         type="range"
@@ -2025,9 +2029,9 @@ function App() {
                           className="form-input"
                           type="number"
                           min="1"
-                          max="30"
+                          max="60"
                           value={fps}
-                          onChange={(event) => setFps(Math.max(1, Math.min(30, Number(event.target.value) || 1)))}
+                          onChange={(event) => setFps(Math.max(1, Math.min(60, Number(event.target.value) || 1)))}
                           disabled={isCameraActive || isReceiverFinalizing}
                         />
                         <small style={{ display: "block", marginTop: "8px", color: "var(--text-secondary)" }}>

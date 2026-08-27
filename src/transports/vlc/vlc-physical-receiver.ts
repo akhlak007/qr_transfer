@@ -22,7 +22,7 @@ export class PhysicalVlcReceiver {
   private readonly listeners = new Set<(event: VlcReceiverFrameEvent) => void>();
   private low = 255;
   private high = 0;
-  private calibrated = false;
+  private readonly luminanceWindow: number[] = [];
   private previousLevel: number | null = null;
   private previousAt = 0;
   private lastTransitionAt: number | null = null;
@@ -57,16 +57,10 @@ export class PhysicalVlcReceiver {
       this.previousAt = capturedAt;
       return this.getDiagnostics();
     }
-    if (!this.calibrated) {
-      this.low = Math.min(this.low, luminance);
-      this.high = Math.max(this.high, luminance);
-      this.calibrated = this.high - this.low >= 20;
-    } else {
-      const threshold = (this.low + this.high) / 2;
-      const alpha = 0.08;
-      if (luminance >= threshold) this.high = this.high * (1 - alpha) + luminance * alpha;
-      else this.low = this.low * (1 - alpha) + luminance * alpha;
-    }
+    this.luminanceWindow.push(luminance);
+    if (this.luminanceWindow.length > 30) this.luminanceWindow.shift();
+    this.low = Math.min(...this.luminanceWindow);
+    this.high = Math.max(...this.luminanceWindow);
     const range = this.high - this.low;
     if (range < 20) {
       this.state = "SIGNAL_TOO_WEAK";
