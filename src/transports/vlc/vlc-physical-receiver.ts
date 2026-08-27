@@ -208,8 +208,11 @@ export class PhysicalVlcReceiver {
   }
 
   getDiagnostics(): PhysicalVlcDiagnostics {
+    const decoderScore = (item: ReturnType<VlcOokReceiver["getDiagnostics"]>) => item.validFramesCount * 1_000_000_000
+      + (item.expectedFrameBits !== null ? 1_000_000 : 0) + item.bufferedFrameBits * 100
+      + item.syncLocksAcquired * 10 + item.bestBarkerCorrelation;
     const decoder = this.decoders.map((item) => item.getDiagnostics())
-      .sort((a, b) => b.validFramesCount - a.validFramesCount)[0];
+      .sort((a, b) => decoderScore(b) - decoderScore(a))[0];
     const dynamicRange = Math.max(0, this.high - this.low);
     const messages: Record<PhysicalVlcState, string> = {
       CALIBRATING: "Point the camera at the full VLC signal area.",

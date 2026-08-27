@@ -4,6 +4,7 @@ export const FrameType = {
   Metadata: 0x00,
   Sequential: 0x01,
   Fountain: 0x02,
+  CompactMessage: 0x03,
 } as const;
 export type FrameType = typeof FrameType[keyof typeof FrameType];
 
@@ -23,6 +24,44 @@ export interface SequentialFrame {
 
 export interface FountainFrame extends FountainSymbol {
   totalBlocks: number;
+}
+
+export interface CompactMessageFrame {
+  messageId: number;
+  bytes: Uint8Array;
+  text: string;
+}
+
+export const MAX_COMPACT_MESSAGE_BYTES = 0xffff - 7;
+export const MAX_PHYSICAL_VLC_COMPACT_MESSAGE_BYTES = 1007;
+
+export function encodeCompactMessageFrame(messageId: number, bytes: Uint8Array): Uint8Array {
+  if (!Number.isInteger(messageId) || messageId < 0 || messageId > 0xffffffff) {
+    throw new RangeError("Compact message ID must be an unsigned 32-bit integer");
+  }
+  if (bytes.length > MAX_COMPACT_MESSAGE_BYTES) {
+    throw new RangeError(`Compact message exceeds ${MAX_COMPACT_MESSAGE_BYTES} UTF-8 bytes`);
+  }
+  // Validate before putting bytes on the optical link; malformed UTF-8 is never a valid text message.
+  new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  const frame = new Uint8Array(7 + bytes.length);
+  const view = new DataView(frame.buffer);
+  view.setUint8(0, FrameType.CompactMessage);
+  view.setUint32(1, messageId);
+  view.setUint16(5, bytes.length);
+  frame.set(bytes, 7);
+  return frame;
+}
+
+export function decodeCompactMessageFrame(frame: Uint8Array): CompactMessageFrame {
+  if (frame.length < 7 || frame[0] !== FrameType.CompactMessage) throw new Error("Invalid compact message frame");
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+  const messageId = view.getUint32(1);
+  const length = view.getUint16(5);
+  if (frame.length !== 7 + length) throw new Error("Compact message length mismatch");
+  const bytes = frame.slice(7);
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return { messageId, bytes, text };
 }
 
 /**

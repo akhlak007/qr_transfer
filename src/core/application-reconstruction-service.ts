@@ -3,12 +3,13 @@ import { FountainDecoder } from "../modules/fountain";
 import {
   FrameType,
   bytesToHex,
+  decodeCompactMessageFrame,
   decodeFountainFrame,
   decodeMetadataFrame,
   decodeSequentialFrame,
   type FileMetadata,
 } from "../modules/protocol";
-import { sha256Hex } from "./integrity";
+import { equalBytes, sha256Hex } from "./integrity";
 import { opticalDiagnosticTrace } from "../diagnostics/optical-trace";
 
 export type ReconstructionFinalizationState = "idle" | "finalizing" | "complete" | "failed";
@@ -23,7 +24,7 @@ export interface ReconstructionResult {
 
 export interface ReconstructionSnapshot {
   metadata: FileMetadata | null;
-  mode: "none" | "sequential" | "fountain";
+  mode: "none" | "sequential" | "fountain" | "compact-message";
   acceptedFrames: number;
   duplicateFrames: number;
   resolvedBlocks: number;
@@ -31,6 +32,7 @@ export interface ReconstructionSnapshot {
   progress: number;
   finalizationState: ReconstructionFinalizationState;
   error: string | null;
+  compactMessage: { messageId: number; bytes: Uint8Array; text: string } | null;
 }
 
 export interface ReconstructionObservation {
@@ -40,6 +42,7 @@ export interface ReconstructionObservation {
   frameType: number;
   snapshot: ReconstructionSnapshot;
   finalization: Promise<ReconstructionResult> | null;
+  compactMessage: { messageId: number; bytes: Uint8Array; text: string } | null;
 }
 
 type HashFunction = (data: Uint8Array) => Promise<string>;
@@ -74,6 +77,8 @@ export class ApplicationReconstructionService {
   private result: ReconstructionResult | null = null;
   private error: string | null = null;
   private generation = 0;
+  private compactMessage: { messageId: number; bytes: Uint8Array; text: string } | null = null;
+  private readonly deliveredCompactMessages = new Map<number, Uint8Array>();
 
   constructor(hash: HashFunction = sha256Hex) { this.hash = hash; }
 
@@ -82,6 +87,7 @@ export class ApplicationReconstructionService {
     let accepted = false;
     let duplicate = false;
     let reset = false;
+    let compactMessage: ReconstructionObservation["compactMessage"] = null;
 
     try {
       opticalDiagnosticTrace.record("ApplicationReconstructionService", "payload-received", {
@@ -91,8 +97,8 @@ export class ApplicationReconstructionService {
         const metadata = decodeMetadataFrame(payload);
         this.validateMetadata(metadata);
         const nextIdentity = metadataIdentity(metadata);
-        if (this.identity !== null && this.identity !== nextIdentity) {
-          this.reset();
+        if (this.compactMessage || (this.identity !== null && this.identity !== nextIdentity)) {
+          this.resetPreservingCompactHistory();
           reset = true;
         }
         if (!this.metadata) {
@@ -142,6 +148,31 @@ export class ApplicationReconstructionService {
           this.acceptedFrames++;
         }
         if (!wasDone && this.fountain!.isDone()) this.startFountainFinalization();
+      } else if (frameType === FrameType.CompactMessage) {
+        const decoded = decodeCompactMessageFrame(payload);
+        const delivered = this.deliveredCompactMessages.get(decoded.messageId);
+        if (delivered) {
+          if (!equalBytes(delivered, decoded.bytes)) throw new Error("Compact message ID collision");
+          duplicate = true;
+          this.duplicateFrames++;
+          compactMessage = this.cloneCompactMessage(decoded);
+        } else {
+          if (this.metadata || this.compactMessage) {
+            this.resetPreservingCompactHistory();
+            reset = true;
+          }
+          this.mode = "compact-message";
+          this.compactMessage = this.cloneCompactMessage(decoded);
+          compactMessage = this.cloneCompactMessage(decoded);
+          this.acceptedFrames++;
+          this.finalizationState = "complete";
+          accepted = true;
+          this.deliveredCompactMessages.set(decoded.messageId, new Uint8Array(decoded.bytes));
+          // ponytail: Keep 256 IDs (~258 KiB at the physical message cap); persist IDs if cross-session replay suppression is required.
+          if (this.deliveredCompactMessages.size > 256) {
+            this.deliveredCompactMessages.delete(this.deliveredCompactMessages.keys().next().value!);
+          }
+        }
       } else {
         throw new Error(`Unknown application frame type: ${frameType}`);
       }
@@ -157,7 +188,7 @@ export class ApplicationReconstructionService {
       totalBlocks: snapshot.totalBlocks, finalizationState: snapshot.finalizationState,
       error: snapshot.error,
     });
-    return { accepted, duplicate, reset, frameType, snapshot, finalization: this.finalizationPromise };
+    return { accepted, duplicate, reset, frameType, snapshot, finalization: this.finalizationPromise, compactMessage };
   }
 
   reset(): void {
@@ -173,13 +204,15 @@ export class ApplicationReconstructionService {
     this.finalizationPromise = null;
     this.result = null;
     this.error = null;
+    this.compactMessage = null;
+    this.deliveredCompactMessages.clear();
   }
 
   getSnapshot(): ReconstructionSnapshot {
-    const totalBlocks = this.metadata?.totalBlocks ?? 0;
+    const totalBlocks = this.compactMessage ? 1 : this.metadata?.totalBlocks ?? 0;
     const resolvedBlocks = this.mode === "fountain"
       ? this.fountain?.getResolvedCount() ?? 0
-      : this.sequentialBlocks.size;
+      : this.mode === "compact-message" ? 1 : this.sequentialBlocks.size;
     return Object.freeze({
       metadata: this.metadata ? cloneMetadata(this.metadata) : null,
       mode: this.mode,
@@ -190,6 +223,7 @@ export class ApplicationReconstructionService {
       progress: totalBlocks > 0 ? resolvedBlocks / totalBlocks : 0,
       finalizationState: this.finalizationState,
       error: this.error,
+      compactMessage: this.compactMessage ? this.cloneCompactMessage(this.compactMessage) : null,
     });
   }
 
@@ -208,6 +242,16 @@ export class ApplicationReconstructionService {
     if (metadata.totalBlocks !== Math.ceil(metadata.fileSize / metadata.blockSize)) {
       throw new Error("Metadata block dimensions are inconsistent");
     }
+  }
+
+  private cloneCompactMessage(message: { messageId: number; bytes: Uint8Array; text: string }) {
+    return Object.freeze({ ...message, bytes: new Uint8Array(message.bytes) });
+  }
+
+  private resetPreservingCompactHistory(): void {
+    const history = Array.from(this.deliveredCompactMessages, ([id, bytes]) => [id, new Uint8Array(bytes)] as const);
+    this.reset();
+    for (const [id, bytes] of history) this.deliveredCompactMessages.set(id, bytes);
   }
 
   private startSequentialFinalization(): void {

@@ -23,7 +23,7 @@ Add one application frame type, `CompactMessage`, after the existing Metadata, S
 
 The existing `encodeVlcFrame()` envelope provides version, modulation, sequence, payload length, and CRC-16. No second CRC is added.
 
-The decoder rejects truncated payloads, length mismatches, invalid UTF-8 using fatal `TextDecoder` validation, and messages above the UI limit. A repeated `messageId` with identical bytes is recognized but not delivered twice. The same identifier with different bytes is rejected as a collision.
+The decoder rejects truncated payloads, length mismatches, invalid UTF-8 using fatal `TextDecoder` validation, and messages above the UI limit. Although the compact format can represent 65,528 message bytes inside the unchanged 16-bit VLC envelope, physical OOK messages are limited to 1,007 bytes by the receiver's unchanged 8,192-bit frame buffer. A repeated `messageId` with identical bytes is recognized but not delivered twice. The same identifier with different bytes is rejected as a collision. The receiver retains a bounded history of the latest 256 delivered identifiers.
 
 ## Sender
 

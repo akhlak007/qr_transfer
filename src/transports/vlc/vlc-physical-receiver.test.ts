@@ -5,6 +5,7 @@ import { modulateManchesterOok, modulateOok } from "./vlc-modulator";
 import { PhysicalVlcReceiver } from "./vlc-physical-receiver";
 import { opticalDiagnosticTrace } from "../../diagnostics/optical-trace";
 import { VlcOokReceiver } from "./vlc-receiver";
+import { encodeCompactMessageFrame } from "../../modules/protocol";
 
 function transmitAtCameraFps(cameraFps: number, phaseMs = 0, dropEvery = 0, transmitterChipMs = 100) {
   const payload = Uint8Array.from({ length: 48 }, (_, index) => index * 17 + 3);
@@ -113,4 +114,40 @@ test("discarded VLC frames record an explicit rejection reason", () => {
   assert.equal(receiver.getDiagnostics().crcStatus, "invalid");
   const rejection = opticalDiagnosticTrace.snapshot().events.find((event) => event.event === "frame-rejected");
   assert.equal(rejection?.details.reason, "crc-failed");
+});
+
+for (const cameraFps of [30, 60]) {
+  test(`compact message recovers physically at 15 chips/s and ${cameraFps} camera FPS`, () => {
+    const payload = encodeCompactMessageFrame(123, new TextEncoder().encode("hey"));
+    const stream = modulateManchesterOok(encodeVlcFrame({ version: 1, modulation: "ook", seqNumber: 1, payload }));
+    const receiver = new PhysicalVlcReceiver(15);
+    let recovered: Uint8Array | null = null;
+    let expectedBits: number | null = null;
+    let maximumBufferedBits = 0;
+    receiver.onFrame((event) => { recovered = event.rawPayload; });
+    const chipMs = 1000 / 15;
+    for (let time = 11; time < stream.totalSymbols * chipMs + 100; time += 1000 / cameraFps) {
+      const diagnostics = receiver.ingestSample(stream.levels[Math.min(stream.totalSymbols - 1, Math.floor(time / chipMs))], time);
+      expectedBits ??= diagnostics.expectedFrameBits;
+      maximumBufferedBits = Math.max(maximumBufferedBits, diagnostics.bufferedFrameBits);
+    }
+    assert.deepEqual(recovered, payload);
+    assert.equal(expectedBits, (payload.length + 10) * 8);
+    assert.ok(maximumBufferedBits > 64);
+  });
+}
+
+test("compact message reacquires on repetition after the initial preamble is missed", () => {
+  const payload = encodeCompactMessageFrame(456, new TextEncoder().encode("hey"));
+  const stream = modulateManchesterOok(encodeVlcFrame({ version: 1, modulation: "ook", seqNumber: 2, payload }));
+  const receiver = new PhysicalVlcReceiver(15);
+  let recovered: Uint8Array | null = null;
+  receiver.onFrame((event) => { recovered = event.rawPayload; });
+  const chipMs = 1000 / 15;
+  const repetitionMs = stream.totalSymbols * chipMs;
+  for (let time = 100 * chipMs; time < repetitionMs * 2 + 100; time += 1000 / 60) {
+    const repeatedTime = time % repetitionMs;
+    receiver.ingestSample(stream.levels[Math.min(stream.totalSymbols - 1, Math.floor(repeatedTime / chipMs))], time);
+  }
+  assert.deepEqual(recovered, payload);
 });

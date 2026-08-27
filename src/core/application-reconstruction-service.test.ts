@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { chunkFile } from "../modules/chunker";
 import { FountainEncoder, mulberry32 } from "../modules/fountain";
-import { encodeFountainFrame, encodeMetadataFrame, encodeSequentialFrame } from "../modules/protocol";
+import { encodeCompactMessageFrame, encodeFountainFrame, encodeMetadataFrame, encodeSequentialFrame } from "../modules/protocol";
 import { sha256, sha256Hex } from "./integrity";
 import { ApplicationReconstructionService } from "./application-reconstruction-service";
 import { opticalDiagnosticTrace } from "../diagnostics/optical-trace";
@@ -130,4 +130,47 @@ test("SHA-256 mismatch fails finalization and result access is copy-isolated", a
   const retained = service.getResult();
   assert.ok(retained);
   assert.equal(retained.data[0], payload[0]);
+});
+
+test("compact messages complete without metadata and suppress exact repetitions", () => {
+  const service = new ApplicationReconstructionService();
+  const payload = encodeCompactMessageFrame(42, new TextEncoder().encode("hey"));
+  const first = service.ingest(payload);
+  const duplicate = service.ingest(payload);
+  assert.equal(first.accepted, true);
+  assert.equal(first.compactMessage?.text, "hey");
+  assert.equal(first.snapshot.progress, 1);
+  assert.equal(first.snapshot.finalizationState, "complete");
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(service.getSnapshot().duplicateFrames, 1);
+});
+
+test("compact message ID collisions are rejected without replacing delivered bytes", () => {
+  const service = new ApplicationReconstructionService();
+  service.ingest(encodeCompactMessageFrame(7, new TextEncoder().encode("one")));
+  const collision = service.ingest(encodeCompactMessageFrame(7, new TextEncoder().encode("two")));
+  assert.equal(collision.accepted, false);
+  assert.match(collision.snapshot.error ?? "", /collision/);
+  assert.equal(service.getSnapshot().compactMessage?.text, "one");
+});
+
+test("legacy metadata replaces compact-message state without mixing transfer modes", async () => {
+  const service = new ApplicationReconstructionService();
+  service.ingest(encodeCompactMessageFrame(8, new TextEncoder().encode("done")));
+  const { metadata } = await fixture(new Uint8Array(8).fill(4));
+  const observation = service.ingest(metadata);
+  assert.equal(observation.reset, true);
+  assert.equal(observation.snapshot.mode, "none");
+  assert.equal(observation.snapshot.compactMessage, null);
+  assert.equal(observation.snapshot.metadata?.fileName, "hardening.bin");
+});
+
+test("compact duplicate and collision detection survives intervening messages", () => {
+  const service = new ApplicationReconstructionService();
+  const first = encodeCompactMessageFrame(1, new TextEncoder().encode("one"));
+  service.ingest(first);
+  service.ingest(encodeCompactMessageFrame(2, new TextEncoder().encode("two")));
+  assert.equal(service.ingest(first).duplicate, true);
+  const collision = service.ingest(encodeCompactMessageFrame(1, new TextEncoder().encode("changed")));
+  assert.match(collision.snapshot.error ?? "", /collision/);
 });

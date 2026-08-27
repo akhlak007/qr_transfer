@@ -10,6 +10,8 @@ import {
   decodeSequentialFrame,
   encodeFountainFrame,
   decodeFountainFrame,
+  encodeCompactMessageFrame,
+  MAX_PHYSICAL_VLC_COMPACT_MESSAGE_BYTES,
 } from "./modules/protocol";
 import type { FileMetadata } from "./modules/protocol";
 import { prepareZXingModule } from "zxing-wasm/reader";
@@ -43,6 +45,7 @@ import { RendererRegistry } from "./transports/rendering/renderer-registry";
 import type { RendererDiagnostics } from "./transports/rendering/optical-renderer";
 import { QRTransmitterRenderer } from "./transports/qr/qr-transmitter-renderer";
 import { VlcTransmitterRenderer } from "./transports/vlc/vlc-transmitter-renderer";
+import type { PhysicalVlcDiagnostics } from "./transports/vlc/vlc-physical-receiver";
 import { VisualOfdmTransmitterRenderer } from "./transports/ofdm/visual-ofdm-transmitter-renderer";
 import { ProtocolRendererDiagnostics } from "./components/ProtocolRendererDiagnostics";
 import { LiveReceiverRouter, OpticalFrameScheduler } from "./core/application-optical-pipeline";
@@ -185,11 +188,13 @@ function App() {
   // --- SENDER STATE ---
   const [transferType, setTransferType] = useState<"file" | "message">("file");
   const [sendText, setSendText] = useState("");
+  const sendTextByteLength = new TextEncoder().encode(sendText).length;
   const [sendFile, setSendFile] = useState<File | null>(null);
   const [sendMediaMetadata, setSendMediaMetadata] = useState<MediaMetadata | null>(null);
   const [sendMode, setSendMode] = useState<"fountain" | "sequential">("fountain");
   const [blockSize, setBlockSize] = useState<number>(512); // default 512 bytes
   const [fps, setFps] = useState<number>(10);
+  const [vlcChipRate, setVlcChipRate] = useState<10 | 15>(15);
   const [qrEcc, setQrEcc] = useState<"L" | "M" | "Q" | "H">("L");
   const [qrVersion, setQrVersion] = useState<number | undefined>(undefined); // Auto version
 
@@ -202,6 +207,9 @@ function App() {
     achievedFps: 0,
     averageRenderMs: 0,
     renderFailures: 0,
+    opticalUnitIndex: 0,
+    totalOpticalUnits: 0,
+    repetitions: 0,
   });
 
   const sendCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -300,7 +308,7 @@ function App() {
       resolvedBlocks: 0,
       checkpointVersion: 1,
       failureCode: null,
-      transportConfig: { fps, qrEcc, qrVersion },
+      transportConfig: { fps: selectedTransport === TransportId.VLC ? vlcChipRate : fps, qrEcc, qrVersion },
     };
     currentSenderSessionRef.current = senderSession;
     if (persistenceRef.current) {
@@ -317,6 +325,9 @@ function App() {
       achievedFps: 0,
       averageRenderMs: 0,
       renderFailures: 0,
+      opticalUnitIndex: 0,
+      totalOpticalUnits: 0,
+      repetitions: 0,
     });
     senderFrameCounterRef.current = 0;
     senderSequenceIndexRef.current = 0;
@@ -373,7 +384,7 @@ function App() {
       resolvedBlocks: 0,
       checkpointVersion: 1,
       failureCode: null,
-      transportConfig: { fps, qrEcc, qrVersion },
+      transportConfig: { fps: selectedTransport === TransportId.VLC ? vlcChipRate : fps, qrEcc, qrVersion },
     };
     currentSenderSessionRef.current = senderSession;
     if (persistenceRef.current) {
@@ -390,6 +401,9 @@ function App() {
       achievedFps: 0,
       averageRenderMs: 0,
       renderFailures: 0,
+      opticalUnitIndex: 0,
+      totalOpticalUnits: 0,
+      repetitions: 0,
     });
     senderFrameCounterRef.current = 0;
     senderSequenceIndexRef.current = 0;
@@ -414,6 +428,8 @@ function App() {
   const toggleSend = () => {
     if (transferType === "file" && !sendFile) return;
     if (transferType === "message" && !sendText.trim()) return;
+    if (selectedTransport === TransportId.VLC && vlcModulation === "ook" && transferType === "message"
+      && sendTextByteLength > MAX_PHYSICAL_VLC_COMPACT_MESSAGE_BYTES) return;
     if (!fileBytesRef.current || !fileHashRef.current) return;
 
     if (isSending) {
@@ -477,6 +493,9 @@ function App() {
       achievedFps: 0,
       averageRenderMs: 0,
       renderFailures: 0,
+      opticalUnitIndex: 0,
+      totalOpticalUnits: 0,
+      repetitions: 0,
     }));
 
     // Clear canvas
@@ -506,8 +525,15 @@ function App() {
       fileHash: fileHashRef.current!,
       fileName: transferType === "file" ? sendFile!.name : "message",
     };
+    const compactMessage = selectedTransport === TransportId.VLC && vlcModulation === "ook" && transferType === "message"
+      ? encodeCompactMessageFrame(
+        new DataView(fileHashRef.current!.buffer, fileHashRef.current!.byteOffset, 4).getUint32(0),
+        fileBytesRef.current!,
+      )
+      : null;
 
-    const intervalMs = 1000 / fps;
+    const activeRate = selectedTransport === TransportId.VLC ? vlcChipRate : fps;
+    const intervalMs = 1000 / activeRate;
     const scheduler = opticalSchedulerRef.current ?? new OpticalFrameScheduler({
       transport: selectedTransport,
       vlcModulation,
@@ -525,8 +551,10 @@ function App() {
       if (!scheduler.hasActiveFrame()) {
         let nextFrameData: Uint8Array;
 
+        if (compactMessage) {
+          nextFrameData = compactMessage;
         // Every 15th application frame, send metadata so the receiver can catch up.
-        if (frameCounter % 15 === 0) {
+        } else if (frameCounter % 15 === 0) {
           nextFrameData = encodeMetadataFrame(metadata);
         } else if (sendMode === "sequential") {
           // Sequential mode
@@ -567,7 +595,7 @@ function App() {
           ofdmGridSize,
           qrEcc,
           qrVersion,
-          symbolRate: fps,
+          symbolRate: activeRate,
           frameSequence: frameCounter,
           opticalUnitIndex: scheduler.getOpticalUnitIndex(),
         });
@@ -590,12 +618,16 @@ function App() {
         successfulRenders++;
         successfulRenderCountRef.current = successfulRenders;
       }
+      const schedulerSnapshot = scheduler.getSnapshot();
       const elapsedMs = Math.max(1, performance.now() - loopStartedAt);
       setSenderStats((prev) => ({
         ...prev,
         framesSent: successfulRenders,
         achievedFps: (renderedThisRun * 1000) / elapsedMs,
         averageRenderMs: renderedThisRun > 0 ? totalRenderMs / renderedThisRun : 0,
+        opticalUnitIndex: schedulerSnapshot.opticalSymbolIndex,
+        totalOpticalUnits: schedulerSnapshot.totalOpticalSymbols,
+        repetitions: compactMessage ? frameCounter : 0,
       }));
 
       const renderElapsedMs = performance.now() - tickStartedAt;
@@ -603,7 +635,7 @@ function App() {
     };
 
     void renderNextFrame();
-  }, [blockSize, fps, ofdmGridSize, ofdmModulation, qrEcc, qrVersion, selectedTransport, sendFile, sendMode, transferType, vlcModulation]);
+  }, [blockSize, fps, ofdmGridSize, ofdmModulation, qrEcc, qrVersion, selectedTransport, sendFile, sendMode, transferType, vlcChipRate, vlcModulation]);
 
   // Re-adjust interval if FPS changes during transmission
   useEffect(() => {
@@ -631,6 +663,7 @@ function App() {
   const [scanStatus, setScanStatus] = useState<"idle" | "listening" | "receiving" | "success" | "failed" | "reconnecting">("idle");
   const [vlcAcknowledgement, setVlcAcknowledgement] = useState<string | null>(null);
   const [vlcBitProgress, setVlcBitProgress] = useState<{ buffered: number; expected: number | null }>({ buffered: 0, expected: null });
+  const [vlcReceiverTelemetry, setVlcReceiverTelemetry] = useState<PhysicalVlcDiagnostics | null>(null);
   const [receivedMeta, setReceivedMeta] = useState<FileMetadata | null>(null);
   const receivedMetaRef = useRef<FileMetadata | null>(null);
 
@@ -670,6 +703,7 @@ function App() {
   const lastScanTimeRef = useRef<number>(0);
   const scannedFramesCountRef = useRef<number>(0);
   const capturedFramesCountRef = useRef<number>(0);
+  const lastVlcUiUpdateAtRef = useRef<number>(0);
   const totalDecodeTimeRef = useRef<number>(0);
   const rxSpeedIntervalRef = useRef<number | null>(null);
   const lastRecoveredBytesRef = useRef<number>(0);
@@ -707,7 +741,7 @@ function App() {
       await (resume ? lifecycle.reconnect() : lifecycle.start());
       const cameraSettings = (videoRef.current?.srcObject as MediaStream | null)?.getVideoTracks()[0]?.getSettings?.();
       opticalDiagnosticTrace.record("PhysicalCameraService", "live-camera-started", {
-        configuredTransport: selectedTransport, configuredChipRate: fps,
+        configuredTransport: selectedTransport, configuredChipRate: vlcChipRate,
         trackWidth: cameraSettings?.width ?? 0, trackHeight: cameraSettings?.height ?? 0,
         trackFrameRate: cameraSettings?.frameRate ?? 0,
       });
@@ -780,6 +814,7 @@ function App() {
     setReceivedMeta(null);
     setVlcAcknowledgement(null);
     setVlcBitProgress({ buffered: 0, expected: null });
+    setVlcReceiverTelemetry(null);
     receivedMetaRef.current = null;
     setResolvedBlocksCount(0);
     setRxStats({
@@ -809,6 +844,7 @@ function App() {
     lastSpeedSampleAtRef.current = null;
     scannedFramesCountRef.current = 0;
     capturedFramesCountRef.current = 0;
+    lastVlcUiUpdateAtRef.current = 0;
     totalDecodeTimeRef.current = 0;
   };
   resetReceiverStateRef.current = () => resetReceiverState();
@@ -905,21 +941,24 @@ function App() {
           const router = liveReceiverRouterRef.current ?? new LiveReceiverRouter({
             transport: configured.transport,
             vlcModulation: configured.vlcModulation,
-            vlcChipRate: fps,
+            vlcChipRate,
             ofdmModulation: configured.ofdmModulation,
             ofdmGridSize: configured.ofdmGridSize,
           });
           liveReceiverRouterRef.current = router;
           const scanResult = await router.ingest(canvas);
-          if (scanResult.transport === TransportId.VLC && "acknowledgement" in scanResult && typeof scanResult.acknowledgement === "string") {
+          const updateVlcUi = capturedAt - lastVlcUiUpdateAtRef.current >= 200;
+          if (updateVlcUi && scanResult.transport === TransportId.VLC && "acknowledgement" in scanResult && typeof scanResult.acknowledgement === "string") {
             setVlcAcknowledgement(scanResult.acknowledgement);
           }
-          if (scanResult.transport === TransportId.VLC && "diagnostics" in scanResult && scanResult.diagnostics) {
-            const diag = scanResult.diagnostics as { bufferedFrameBits?: number; expectedFrameBits?: number | null };
+          if (updateVlcUi && scanResult.transport === TransportId.VLC && "diagnostics" in scanResult && scanResult.diagnostics) {
+            const diag = scanResult.diagnostics as PhysicalVlcDiagnostics;
+            setVlcReceiverTelemetry(diag);
             setVlcBitProgress({
               buffered: diag.bufferedFrameBits ?? 0,
               expected: diag.expectedFrameBits ?? null,
             });
+            lastVlcUiUpdateAtRef.current = capturedAt;
           }
           const decodedCount = scanResult.payloads.length;
           const corrupt = scanResult.crcStatus === "failed" || scanResult.crcStatus === "invalid";
@@ -976,6 +1015,19 @@ function App() {
         });
     }
     const type = bytes[0] as FrameType;
+
+    if (type === FrameType.CompactMessage && reconstruction.accepted && reconstruction.compactMessage) {
+      const message = reconstruction.compactMessage;
+      const actualHash = await sha256(message.bytes);
+      setReceivedMessage(message.text);
+      setIntegrityResult(createIntegrityResult(null, actualHash, message.bytes.length, message.bytes.length));
+      setVlcBitProgress((progress) => ({ buffered: progress.expected ?? progress.buffered, expected: progress.expected }));
+      rxCompletedAtRef.current = performance.now();
+      stopCamera();
+      setScanStatus("success");
+      setVlcAcknowledgement(`Message received (${message.bytes.length} bytes). VLC CRC-16 passed.`);
+      return;
+    }
 
     // Legacy persistence/UI mirrors are adapters only: a payload rejected by the
     // authoritative reconstruction service must never mutate their state.
@@ -1348,6 +1400,20 @@ function App() {
     setIsSending(true);
   }, [refreshSavedSessionsCount]);
 
+  const vlcOperatorStage = scanStatus === "success" && receivedMessage !== null
+    ? "Message received"
+    : !isCameraActive ? "Camera ready"
+      : vlcReceiverTelemetry?.state === "LOCKED_RECEIVING" ? "Receiving frame"
+        : vlcReceiverTelemetry?.state === "CRC_FAILED" ? "CRC check failed"
+          : vlcReceiverTelemetry?.state === "SIGNAL_TOO_WEAK" ? "Signal too weak"
+            : vlcReceiverTelemetry?.state === "CLOCK_LOST" ? "Timing lost"
+              : vlcReceiverTelemetry?.state === "INVALID_MANCHESTER" ? "Signal unstable"
+                : vlcReceiverTelemetry?.state === "SEARCHING_SYNC" ? "Synchronizing"
+                  : vlcReceiverTelemetry?.state === "SEARCHING_CLOCK" ? "Signal detected"
+                    : "Waiting for light changes";
+  const vlcFramePercent = vlcBitProgress.expected
+    ? Math.min(100, Math.round((vlcBitProgress.buffered / vlcBitProgress.expected) * 100)) : 0;
+
   return (
     <>
       {/* Editorial Fixed Header */}
@@ -1697,7 +1763,10 @@ function App() {
                       </> : <>
                         <label className="form-label" htmlFor="message-input">Write Message</label>
                         <textarea id="message-input" className="message-input" value={sendText} onChange={handleTextChange} placeholder="Type the message you want to send..." disabled={isSending} rows={9} />
-                        <div className="message-byte-count">{new TextEncoder().encode(sendText).length.toLocaleString()} bytes</div>
+                        <div className="message-byte-count" style={{ color: selectedTransport === TransportId.VLC && sendTextByteLength > MAX_PHYSICAL_VLC_COMPACT_MESSAGE_BYTES ? "var(--color-amber)" : undefined }}>
+                          {sendTextByteLength.toLocaleString()} bytes
+                          {selectedTransport === TransportId.VLC ? ` · Physical VLC limit ${MAX_PHYSICAL_VLC_COMPACT_MESSAGE_BYTES.toLocaleString()} bytes` : ""}
+                        </div>
                       </>}
                     </div>
 
@@ -1865,18 +1934,21 @@ function App() {
                           {selectedTransport === TransportId.VLC ? "Manchester Chip Rate" : "Display Frame Rate (FPS)"}
                         </label>
                         <span className="range-val">
-                          {fps} {selectedTransport === TransportId.VLC ? "chips/s" : "FPS"}
+                          {selectedTransport === TransportId.VLC ? vlcChipRate : fps} {selectedTransport === TransportId.VLC ? "chips/s" : "FPS"}
                         </span>
                       </div>
-                      <input
-                        type="range"
-                        className="form-input-range"
-                        min="2"
-                        max="60"
-                        step="1"
-                        value={fps}
+                      {selectedTransport === TransportId.VLC ? <>
+                        <select className="form-select" value={vlcChipRate} onChange={(event) => setVlcChipRate(Number(event.target.value) as 10 | 15)} disabled={isSending}>
+                          <option value={15}>15 chips/s · Balanced (30+ FPS camera)</option>
+                          <option value={10}>10 chips/s · Compatibility</option>
+                        </select>
+                        <small style={{ display: "block", marginTop: "8px", color: "var(--text-secondary)" }}>
+                          Use the same setting on the receiver. Compact messages repeat automatically.
+                        </small>
+                      </> : <input
+                        type="range" className="form-input-range" min="2" max="60" step="1" value={fps}
                         onChange={(e) => setFps(parseInt(e.target.value))}
-                      />
+                      />}
                     </div>
 
                     <div className="form-group" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
@@ -1914,7 +1986,9 @@ function App() {
                       <button
                         className={`btn ${isSending ? "btn-secondary" : "btn-primary"}`}
                         onClick={toggleSend}
-                        disabled={transferType === "file" ? !sendFile : !sendText.trim()}
+                        disabled={transferType === "file" ? !sendFile : !sendText.trim()
+                          || (selectedTransport === TransportId.VLC && vlcModulation === "ook"
+                            && sendTextByteLength > MAX_PHYSICAL_VLC_COMPACT_MESSAGE_BYTES)}
                       >
                         {isSending ? <PauseIcon /> : <PlayIcon />}
                         {isSending ? "Pause Transmission" : "Start Transmission"}
@@ -1943,11 +2017,13 @@ function App() {
                           <div>
                             <span style={{ color: "var(--color-accent)", fontWeight: "bold" }}>● TRANSMITTING</span>
                             <br />
-                            Frames sent: {senderStats.framesSent}
+                            Optical chips shown: {senderStats.framesSent}
                             <br />
                             Achieved: {senderStats.achievedFps.toFixed(1)} FPS | Render: {senderStats.averageRenderMs.toFixed(1)} ms
                             <br />
-                            {sendMode === "sequential"
+                            {selectedTransport === TransportId.VLC && transferType === "message" && vlcModulation === "ook"
+                              ? `Frame: ${senderStats.opticalUnitIndex} / ${senderStats.totalOpticalUnits || "?"} chips · Repetitions: ${senderStats.repetitions}`
+                              : sendMode === "sequential"
                               ? `Block: ${senderStats.currentFrameIndex + 1} / ${senderStats.totalBlocks}`
                               : `Current Seed: 0x${senderStats.fountainSeed.toString(16).toUpperCase()}`}
                           </div>
@@ -2052,17 +2128,13 @@ function App() {
                           <option value="csk16" disabled>CSK-16 (Experimental · software only)</option>
                         </select>
                         <label className="form-label" style={{ marginTop: "12px" }}>Manchester Chip Rate</label>
-                        <input
-                          className="form-input"
-                          type="number"
-                          min="1"
-                          max="60"
-                          value={fps}
-                          onChange={(event) => setFps(Math.max(1, Math.min(60, Number(event.target.value) || 1)))}
-                          disabled={isCameraActive || isReceiverFinalizing}
-                        />
+                        <select className="form-select" value={vlcChipRate} onChange={(event) => setVlcChipRate(Number(event.target.value) as 10 | 15)}
+                          disabled={isCameraActive || isReceiverFinalizing}>
+                          <option value={15}>15 chips/s · Balanced (30+ FPS camera)</option>
+                          <option value={10}>10 chips/s · Compatibility</option>
+                        </select>
                         <small style={{ display: "block", marginTop: "8px", color: "var(--text-secondary)" }}>
-                          Match the sender's VLC chip rate ({fps} chips/s) before starting the camera. OOK carries {fps / 2} logical bits/s.
+                          Match the sender's VLC chip rate ({vlcChipRate} chips/s) before starting the camera. OOK carries {vlcChipRate / 2} logical bits/s.
                         </small>
                       </div>
                     )}
@@ -2087,6 +2159,23 @@ function App() {
                         {vlcAcknowledgement}
                       </div>
                     )}
+
+                    {selectedTransport === TransportId.VLC && <div role="status" aria-live="polite" style={{
+                      marginBottom: "16px", padding: "14px", borderRadius: "8px", border: "1px solid rgba(34,211,238,.28)",
+                      background: "rgba(8,12,24,.65)",
+                    }}>
+                      <div style={{ fontWeight: 700, marginBottom: "6px" }}>{vlcOperatorStage}</div>
+                      <div style={{ color: "var(--text-secondary)", fontSize: "13px" }}>
+                        Camera: {rxStats.cameraFps || "measuring"} FPS · Signal range: {vlcReceiverTelemetry?.dynamicRange.toFixed(0) ?? "—"}
+                        {vlcBitProgress.expected ? ` · Frame: ${vlcBitProgress.buffered}/${vlcBitProgress.expected} bits (${vlcFramePercent}%)` : ""}
+                      </div>
+                      {vlcChipRate === 15 && rxStats.cameraFps > 0 && rxStats.cameraFps < 27 && <div style={{ color: "var(--color-amber)", marginTop: "8px", fontSize: "13px" }}>
+                        Camera FPS is too low for 15 chips/s. Stop both sides and select 10 chips/s.
+                      </div>}
+                      {vlcReceiverTelemetry?.lastRejectedReason && <div style={{ color: "var(--color-amber)", marginTop: "8px", fontSize: "13px" }}>
+                        Last rejected frame: {vlcReceiverTelemetry.lastRejectedReason}
+                      </div>}
+                    </div>}
 
                     {selectedTransport === TransportId.VLC && <VlcDiagnosticPanel active={isCameraActive} />}
 
@@ -2202,7 +2291,7 @@ function App() {
                       </div>
                     )}
 
-                    {receivedMessage !== null && receivedMeta?.dataType === "message" && (
+                    {receivedMessage !== null && (receivedMeta?.dataType === "message" || selectedTransport === TransportId.VLC) && (
                       <div className="received-message-container">
                         <div className="received-message-title">Message Received</div>
                         <div className="received-message-body">{receivedMessage}</div>
