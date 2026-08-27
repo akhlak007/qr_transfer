@@ -95,7 +95,7 @@ export class PhysicalVlcReceiver {
       return this.traceObservation(capturedAt, previousState);
     }
     this.luminanceWindow.push(luminance);
-    if (this.luminanceWindow.length > 30) this.luminanceWindow.shift();
+    if (this.luminanceWindow.length > 50) this.luminanceWindow.shift();
     this.low = Math.min(...this.luminanceWindow);
     this.high = Math.max(...this.luminanceWindow);
     const range = this.high - this.low;
