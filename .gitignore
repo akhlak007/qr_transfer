@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+*-trace-sample.json
+vlc-trace-sample.json
+*.trace.json

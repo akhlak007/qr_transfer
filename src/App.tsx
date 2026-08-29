@@ -55,6 +55,8 @@ import { FinalizationGenerationGuard } from "./core/finalization-generation-guar
 import { ReceiverSessionController } from "./core/receiver-session-controller";
 import { VlcDiagnosticPanel } from "./components/VlcDiagnosticPanel";
 import { opticalDiagnosticTrace } from "./diagnostics/optical-trace";
+import { TextFlashDemoPanel } from "./components/TextFlashDemoPanel";
+import { TextFlashWorkbenchPanel } from "./components/TextFlashWorkbenchPanel";
 
 
 const PlayIcon = () => (
@@ -83,7 +85,7 @@ const DownloadIcon = () => (
 );
 
 function App() {
-  const [activeTab, setActiveTab] = useState<"send" | "receive">("send");
+  const [activeTab, setActiveTab] = useState<"send" | "receive" | "text-flash">("send");
   const [zxingReady, setZxingReady] = useState(false);
 
   // Persistence and Storage State
@@ -1706,10 +1708,23 @@ function App() {
               >
                 Receive
               </button>
+              <button
+                className={`tab-btn ${activeTab === "text-flash" ? "active" : ""}`}
+                onClick={() => setActiveTab("text-flash")}
+              >
+                Text Flash
+              </button>
             </nav>
 
             <main className="content">
-              {activeTab === "send" ? (
+              {activeTab === "text-flash" ? (
+                <>
+                  <TextFlashDemoPanel />
+                  <div style={{ marginTop: 24 }}>
+                    <TextFlashWorkbenchPanel />
+                  </div>
+                </>
+              ) : activeTab === "send" ? (
                 <div className="card grid-2col">
                   {/* Sender controls */}
                   <div className="sender-controls">
