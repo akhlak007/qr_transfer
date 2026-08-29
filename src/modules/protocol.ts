@@ -33,7 +33,8 @@ export interface CompactMessageFrame {
 }
 
 export const MAX_COMPACT_MESSAGE_BYTES = 0xffff - 7;
-export const MAX_PHYSICAL_VLC_COMPACT_MESSAGE_BYTES = 1007;
+/** Temporary physical VLC short-message validation cap (HELLO path). Raise after phone validation expands. */
+export const MAX_PHYSICAL_VLC_COMPACT_MESSAGE_BYTES = 16;
 
 export function encodeCompactMessageFrame(messageId: number, bytes: Uint8Array): Uint8Array {
   if (!Number.isInteger(messageId) || messageId < 0 || messageId > 0xffffffff) {

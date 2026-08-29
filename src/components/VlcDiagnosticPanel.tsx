@@ -30,6 +30,9 @@ export function VlcDiagnosticPanel({ active }: { active: boolean }) {
       <div>Recovered Bits: <strong>{String(observation.recoveredBits ?? 0)}</strong></div>
       <div>Frame Buffer: <strong>{String(observation.bufferedFrameBits ?? 0)} / {String(observation.expectedFrameBits ?? "?")}</strong></div>
       <div>Clock Resets: <strong>{String(observation.clockResets ?? 0)}</strong></div>
+      <div>Soft Reacq: <strong>{String(observation.softReacquisitions ?? 0)}</strong></div>
+      <div>Timing: <strong>{observation.timingLocked ? "LOCKED" : "OPEN"}</strong></div>
+      <div>Progress: <strong>{String(observation.frameProgressPercent ?? 0)}%</strong></div>
       <div>Frame Gap: <strong>{Number(observation.gapMs ?? 0).toFixed(1)} ms</strong></div>
     </div>}
 

@@ -42,6 +42,7 @@ export class VlcTransmitterRenderer implements OpticalRenderer {
       wireFrameSequence: bytes.length >= 6 ? (bytes[4] << 8) | bytes[5] : null,
       chipIndex: index, totalChips: stream.totalSymbols, level: stream.levels[index] ?? 0,
       red: color[0], green: color[1], blue: color[2], configuredChipRate: options.symbolRate,
+      displayedAt: started,
     });
     return {
       durationMs: performance.now() - started,
